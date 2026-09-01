@@ -81,7 +81,7 @@ const IS_MAC = process.platform === 'darwin'
 // electron-builder раскладывает resources/common + resources/<platform>
 // плоско в resources/ (to: ''), поэтому плоский путь — основной кандидат.
 const PLATFORM_DIR = IS_MAC ? 'macos' : 'windows'
-const TGWS_BIN_NAME = IS_MAC ? 'TgWsProxy' : 'TgWsProxy_windows.exe'
+export const TGWS_BIN_NAME = IS_MAC ? 'TgWsProxy' : 'TgWsProxy_windows.exe'
 const ZAPRET_MARKER = IS_MAC ? 'bin/utunws' : 'general.bat'
 
 export function tgwsBinaryPath(): string {
@@ -97,11 +97,26 @@ export function zapretRuntimeDir(): string {
   return path.join(runtimeDir(), 'zapret')
 }
 
+// Архив ZapretMac лежит как `ZapretMac.app/Contents/Resources/Payload/**`.
+// Распаковщик кладёт payload плоско, но старые установки/ручные распаковки
+// могут оставить вложенность — ищем корень payload по маркеру.
+const NESTED_PAYLOAD_CANDIDATES = ['Contents/Resources/Payload', 'Payload']
+
+function resolveZapretRoot(base: string | undefined): string | undefined {
+  if (!base) return undefined
+  if (existsSync(path.join(base, ZAPRET_MARKER))) return base
+  for (const rel of NESTED_PAYLOAD_CANDIDATES) {
+    const p = path.join(base, rel)
+    if (existsSync(path.join(p, ZAPRET_MARKER))) return p
+  }
+  return undefined
+}
+
 export function zapretBundleDir(): string {
-  const rt = zapretRuntimeDir()
-  if (existsSync(path.join(rt, ZAPRET_MARKER))) return rt
-  const flat = path.join(resourcesDir(), 'zapret') // packaged (плоско)
-  if (existsSync(path.join(flat, ZAPRET_MARKER))) return flat
+  const rt = resolveZapretRoot(zapretRuntimeDir())
+  if (rt) return rt
+  const flat = resolveZapretRoot(path.join(resourcesDir(), 'zapret')) // packaged
+  if (flat) return flat
   return path.join(resourcesDir(), PLATFORM_DIR, 'zapret') // dev
 }
 

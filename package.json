@@ -13,6 +13,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "checksum": "node scripts/checksum.mjs",
     "icons:rebuild": "node scripts/build-icons.mjs",
+    "resources:mac": "node scripts/build-mac-resources.mjs",
     "dev": "electron-vite dev",
     "postinstall": "electron-builder install-app-deps",
     "build:win": "electron-vite build && electron-builder --publish never --win",

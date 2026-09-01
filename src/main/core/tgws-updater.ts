@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
-import path from 'path'
+import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'fs'
+import path, { basename } from 'path'
 import { spawn } from 'child_process'
 import { tgwsRuntimeDir } from '../utils/dirs'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
+import { fixMacBinaryInPlace } from '../utils/mac-binary'
 import { stopTgws, getTgwsStatus } from './tgws'
 
 const IS_MAC = process.platform === 'darwin'
@@ -53,6 +54,11 @@ function compareVersion(a: string, b: string): number {
     }
   }
   return 0
+}
+
+/** macOS-ассет пригоден только если это исполняемый файл без расширения. */
+function isMacCliBinary(name: string): boolean {
+  return !/\.(dmg|zip|pkg|app|deb|rpm|exe|7z|tar|tgz|gz|bz2|xz)$/i.test(name)
 }
 
 interface GhAsset {
@@ -131,12 +137,13 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
 
   // Windows: строго 64-bit "TgWsProxy_windows.exe" (в релизе есть и Win-7
   // 32-bit сборка, которую мы не хотим ставить).
-  // macOS: ищем CLI-бинарник "TgWsProxy_macos*" / "TgWsProxy_universal*".
-  // Пока mirror-репозиторий публикует только Windows-бинарник, macOS-asset
-  // не находится → hasUpdate = false, но latest/уведомление остаются честными.
+  // macOS: нужен «голый» CLI-бинарник без расширения. В релизах Flowseal
+  // macOS поставляется ТОЛЬКО как TgWsProxy_macos_universal.dmg — это образ
+  // с .app, его нельзя записывать поверх бинарника. Поэтому любые .dmg/.zip/
+  // .pkg отсекаем: лучше честно показать «обновлений нет», чем сломать запуск.
   const assets = release.assets ?? []
   const winAsset = IS_MAC
-    ? (assets.find((a) => /^TgWsProxy.*(macos|darwin|universal|osx)/i.test(a.name)) ??
+    ? (assets.find((a) => /^TgWsProxy/i.test(a.name) && isMacCliBinary(a.name)) ??
       assets.find((a) => /^TgWsProxy[^.]*$/i.test(a.name)))
     : (assets.find((a) => /^TgWsProxy_windows\.exe$/i.test(a.name)) ??
       assets.find((a) => /^TgWsProxy_windows.*\.exe$/i.test(a.name) && !/32bit/i.test(a.name)))
@@ -226,10 +233,29 @@ export async function installTgwsUpdate(
     throw new Error(`Загруженный файл слишком маленький (${buf.length} байт)`)
   }
 
+  if (IS_MAC && !isMacCliBinary(basename(assetUrl.split(/[?#]/)[0]))) {
+    throw new Error(
+      'Для macOS нужен CLI-бинарник TgWsProxy без расширения. ' +
+        'Ассеты .dmg/.zip (образ с .app) не поддерживаются.'
+    )
+  }
+
   const dir = tgwsRuntimeDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const dest = path.join(dir, BIN_NAME)
   writeFileSync(dest, buf)
+
+  if (IS_MAC) {
+    // Снимаем карантин и переподписываем ad-hoc: иначе PyInstaller-бандл
+    // падает с "Failed to load Python shared library … different Team IDs".
+    fixMacBinaryInPlace(dest)
+  } else {
+    try {
+      chmodSync(dest, 0o755)
+    } catch {
+      /* best-effort */
+    }
+  }
 
   // Persist version + clear "Later" dismissal.
   const finalVersion = expectedVersion || undefined

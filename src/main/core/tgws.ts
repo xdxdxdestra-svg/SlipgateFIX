@@ -4,7 +4,8 @@ import { existsSync } from 'fs'
 import { randomBytes } from 'crypto'
 import os from 'os'
 import { BrowserWindow } from 'electron'
-import { tgwsBinaryPath } from '../utils/dirs'
+import { TGWS_BIN_NAME, tgwsBinaryPath } from '../utils/dirs'
+import { prepareMacBinary } from '../utils/mac-binary'
 import { getAppConfig, patchAppConfig } from '../config'
 
 // ---- module state ----------------------------------------------------------
@@ -46,6 +47,32 @@ function setStatus(next: Partial<CoreStatus>): void {
 
 export function getTgwsStatus(): CoreStatus {
   return status
+}
+
+// ---- macOS: подготовка вложенного PyInstaller-бинарника --------------------
+//
+// TgWsProxy — PyInstaller onefile. После сборки Slipgate.app electron-builder
+// (@electron/osx-sign) подписывает ВСЕ бинарники внутри Contents/, в т.ч.
+// resources/tgws/TgWsProxy, и применяет к ним hardened runtime. Из-за этого
+// включается library validation и встроенный в архив Python.framework
+// (подписан другим Team ID) не проходит проверку:
+//   Failed to load Python shared library … different Team IDs
+// Переподпись ad-hoc (без hardened runtime) в writable-каталоге снимает
+// library validation. Подробности — в utils/mac-binary.ts.
+function resolveBinary(raw: string): string {
+  if (process.platform !== 'darwin') return raw
+  return prepareMacBinary(raw, TGWS_BIN_NAME, (m) => log('info', m))
+}
+
+/** Диагностика: отличить сбой подписи от прочих причин падения бинарника. */
+function describePyiFailure(tail: string): string | undefined {
+  if (/Failed to load Python shared library|different Team IDs|code signature/i.test(tail)) {
+    return (
+      'Бинарник TgWsProxy не прошёл проверку подписи macOS (library validation). ' +
+      'Обновите TgWsProxy на странице Telegram или переустановите приложение.'
+    )
+  }
+  return undefined
 }
 
 // ---- pre-flight: secret ----------------------------------------------------
@@ -219,7 +246,9 @@ async function startTgwsImpl(): Promise<void> {
   const cfg0 = await getAppConfig()
   if (!cfg0.tgws) throw new Error('tgws config missing')
 
-  const bin = cfg0.tgws.binaryPath || tgwsBinaryPath()
+  // На macOS бинарник копируется в writable-каталог и переподписывается ad-hoc,
+  // иначе PyInstaller-бандл падает с "Failed to load Python shared library".
+  const bin = resolveBinary(cfg0.tgws.binaryPath || tgwsBinaryPath())
   if (!existsSync(bin)) {
     setStatus({ state: 'error', lastError: `TgWsProxy binary not found: ${bin}` })
     log('error', `binary missing: ${bin}`)
@@ -269,8 +298,17 @@ async function startTgwsImpl(): Promise<void> {
     log('info', `spawning: ${bin} ${args.join(' ')}`)
     child = spawn(bin, args, { windowsHide: true })
 
-    child.stdout?.on('data', (buf) => log('info', buf.toString().trimEnd()))
-    child.stderr?.on('data', (buf) => log('warn', buf.toString().trimEnd()))
+    // Хвост вывода нужен, чтобы при падении показать настоящую причину
+    // (например текст ошибки PyInstaller), а не только "exited with code 255".
+    let tail = ''
+    const feed = (buf: Buffer, type: ControllerLog['type']): void => {
+      const text = buf.toString().trimEnd()
+      if (!text) return
+      tail = (tail ? `${tail}\n${text}` : text).split('\n').slice(-12).join('\n')
+      log(type, text)
+    }
+    child.stdout?.on('data', (buf) => feed(buf, 'info'))
+    child.stderr?.on('data', (buf) => feed(buf, 'warn'))
     child.on('error', (err) => {
       log('error', `child error: ${err.message}`)
       setStatus({ state: 'error', lastError: err.message, pid: undefined })
@@ -283,12 +321,21 @@ async function startTgwsImpl(): Promise<void> {
       // returns code=1, not signal=SIGTERM, on Windows).
       const wasGraceful = stopRequested || code === 0 || signal === 'SIGTERM'
       child = null
+      let lastError: string | undefined
+      if (!wasGraceful) {
+        const hint = describePyiFailure(tail)
+        if (hint) {
+          lastError = hint
+        } else {
+          const base = code != null ? `exited with code ${code}` : `killed by ${signal}`
+          const lastLine = tail.trim().split('\n').slice(-1)[0]
+          lastError = lastLine ? `${base}: ${lastLine}` : base
+        }
+      }
       setStatus({
         state: wasGraceful ? 'stopped' : 'error',
         pid: undefined,
-        lastError: wasGraceful
-          ? undefined
-          : (code != null ? `exited with code ${code}` : undefined)
+        lastError
       })
     })
 
@@ -296,7 +343,10 @@ async function startTgwsImpl(): Promise<void> {
     // either fails its bind() within tens of milliseconds or it's healthy.
     await new Promise((r) => setTimeout(r, 120))
     if (!child || child.exitCode != null) {
-      throw new Error('process died immediately after spawn')
+      throw new Error(
+        describePyiFailure(tail) ??
+          `process died immediately after spawn (code=${child?.exitCode ?? 'n/a'})`
+      )
     }
 
     setStatus({ state: 'running', pid: child.pid })
@@ -346,7 +396,15 @@ async function stopTgwsImpl(): Promise<void> {
     new Promise<void>((resolve) => setTimeout(resolve, 500))
   ])
 
-  if (process.platform !== 'win32' && proc.exitCode == null && !proc.killed) {
+  if (process.platform === 'darwin' && proc.exitCode == null) {
+    // PyInstaller onefile порождает дочерний процесс: SIGKILL родителя оставит
+    // ребёнка живым, и порт останется занятым. Добиваем по имени образа.
+    await new Promise<void>((resolve) => {
+      const p = spawn('/usr/bin/pkill', ['-9', '-f', 'TgWsProxy'])
+      p.on('exit', () => resolve())
+      p.on('error', () => resolve())
+    })
+  } else if (process.platform !== 'win32' && proc.exitCode == null && !proc.killed) {
     log('warn', 'graceful stop timed out, sending SIGKILL')
     try { proc.kill('SIGKILL') } catch { /* noop */ }
   }

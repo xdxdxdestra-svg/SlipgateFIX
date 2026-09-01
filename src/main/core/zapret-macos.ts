@@ -101,16 +101,27 @@ export function listStrategies(): StrategyDescriptor[] {
 function ensureDataRoot(strategyId: string): void {
   const lists = path.join(DATA_ROOT, 'lists')
   mkdirSync(lists, { recursive: true })
-  const src = path.join(zapretBundleDir(), 'default-lists')
+  // Источники дефолтных списков: распакованный runtime-bundle, затем уже
+  // установленный payload в /Library (на случай, если runtime очищен).
+  const sources = [
+    path.join(zapretBundleDir(), 'default-lists'),
+    path.join(INSTALL, 'default-lists')
+  ]
   for (const name of REQUIRED_LISTS) {
     const target = path.join(lists, name)
-    if (!existsSync(target) && existsSync(path.join(src, name))) {
-      try {
-        copyFileSync(path.join(src, name), target)
-      } catch {
-        /* noop */
+    if (!existsSync(target)) {
+      for (const src of sources) {
+        const from = path.join(src, name)
+        if (!existsSync(from)) continue
+        try {
+          copyFileSync(from, target)
+          break
+        } catch {
+          /* noop */
+        }
       }
     }
+    // run.sh падает (exit 1), если файла нет вообще — создаём пустышку.
     if (!existsSync(target)) writeFileSync(target, '', 'utf8')
   }
   writeFileSync(path.join(DATA_ROOT, 'selected-strategy'), strategyId + '\n')
@@ -158,14 +169,13 @@ export async function installZapretBundle(
     throw new Error('Архив не содержит bin/utunws — это не сборка ZapretMac')
   }
 
+  // Архив устроен как `ZapretMac.app/Contents/Resources/Payload/**`.
+  // Надо отрезать ВСЁ вплоть до каталога payload (того, что содержит bin/),
+  // иначе install.sh окажется по адресу <dest>/Contents/Resources/Payload/…
+  // и `/bin/sh '<dest>/install.sh'` тихо не найдёт файл (ранее ошибка
+  // поглощалась, установка не выполнялась и UI писал «Zapret не установлен»).
   const utunPath = normalize(utunEntry.entryName)
-  const rootPrefixDir = utunPath.includes('/')
-    ? utunPath.slice(0, utunPath.lastIndexOf('/') + 1)
-    : ''
-  // Верхнеуровневая папка архива (например `ZapretMac-macOS-universal/`).
-  const topPrefix = rootPrefixDir.includes('/')
-    ? rootPrefixDir.slice(0, rootPrefixDir.indexOf('/') + 1)
-    : ''
+  const payloadPrefix = utunPath.slice(0, utunPath.lastIndexOf('bin/utunws'))
 
   const dest = zapretRuntimeDir()
   if (existsSync(dest)) {
@@ -177,8 +187,8 @@ export async function installZapretBundle(
   for (const e of entries) {
     if (e.isDirectory) continue
     const name = normalize(e.entryName)
-    if (topPrefix && !name.startsWith(topPrefix)) continue
-    const rel = name.slice(topPrefix.length)
+    if (payloadPrefix && !name.startsWith(payloadPrefix)) continue
+    const rel = name.slice(payloadPrefix.length)
     if (!rel || rel.includes('..')) continue
     const out = path.join(dest, rel)
     mkdirSync(path.dirname(out), { recursive: true })
@@ -187,7 +197,17 @@ export async function installZapretBundle(
   }
 
   // Исполняемые биты (архив из GitHub может их не сохранить).
-  for (const rel of ['bin/utunws', 'install.sh', 'run.sh', 'stop.sh', 'restart.sh', 'watchdog.sh']) {
+  // Список совпадает с тем, что chmod'ит upstream install.sh.
+  for (const rel of [
+    'bin/utunws',
+    'install.sh',
+    'run.sh',
+    'stop.sh',
+    'restart.sh',
+    'watchdog.sh',
+    'test-strategies.sh',
+    'update-app.sh'
+  ]) {
     const p = path.join(dest, rel)
     if (existsSync(p)) {
       try {
@@ -198,25 +218,79 @@ export async function installZapretBundle(
     }
   }
 
-  if (!isInstalled()) {
+  if (!existsSync(path.join(dest, 'install.sh'))) {
+    throw new Error(
+      `Распакованный payload не содержит install.sh (префикс «${payloadPrefix}») — обновите Slipgate`
+    )
+  }
+
+  const firstInstall = !isInstalled()
+
+  if (firstInstall) {
     // Первая установка: install.sh ставит LaunchDaemon и запускает zapret.
-    const script = `set -eu\n/bin/sh '${dest}/install.sh' '${dest}' '${DATA_ROOT}'\n`
-    await runAsAdminOnMac(script)
+    const script = `set -eu\n/bin/sh ${sq(`${dest}/install.sh`)} ${sq(dest)} ${sq(DATA_ROOT)}\n`
+    const r = await runAsAdminOnMac(script)
+    if (r.code !== 0) {
+      throw new Error(installErrorText('установить', r))
+    }
   } else {
     // Обновление: пересинхронизируем payload на месте.
+    const chmodTargets = [
+      'install.sh',
+      'run.sh',
+      'stop.sh',
+      'restart.sh',
+      'watchdog.sh',
+      'test-strategies.sh',
+      'update-app.sh',
+      'bin/utunws'
+    ]
+      .filter((rel) => existsSync(path.join(dest, rel)))
+      .map((rel) => sq(`${INSTALL}/${rel}`))
+      .join(' ')
     const script = [
       'set -eu',
-      `/usr/bin/rsync -a --delete '${dest}/' '${INSTALL}/'`,
-      `/usr/sbin/chown -R root:wheel '${INSTALL}'`,
-      `/bin/chmod 755 '${INSTALL}'/install.sh '${INSTALL}'/run.sh '${INSTALL}'/stop.sh '${INSTALL}'/restart.sh '${INSTALL}'/watchdog.sh '${INSTALL}'/bin/utunws`,
+      `/usr/bin/rsync -a --delete ${sq(`${dest}/`)} ${sq(`${INSTALL}/`)}`,
+      `/usr/sbin/chown -R root:wheel ${sq(INSTALL)}`,
+      ...(chmodTargets ? [`/bin/chmod 755 ${chmodTargets}`] : []),
       ''
     ].join('\n')
-    await runAsAdminOnMac(script)
+    const r = await runAsAdminOnMac(script)
+    if (r.code !== 0) {
+      throw new Error(installErrorText('обновить', r))
+    }
+  }
+
+  if (!isInstalled()) {
+    throw new Error(
+      'Установка не подтвердилась: нет /Library/Application Support/ZapretMac/bin/utunws или LaunchDaemon-плиста. ' +
+        'Проверьте пароль администратора и отсутствие запрета в «Системные настройки → Конфиденциальность».'
+    )
   }
 
   const list = listStrategies()
-  log('info', `ZapretMac bundle installed: ${written} files, ${list.length} strategies`)
+  log(
+    'info',
+    `ZapretMac bundle ${firstInstall ? 'installed' : 'updated'}: ${written} files, ${list.length} strategies`
+  )
   return { strategies: list.length }
+}
+
+/** Надёжное одинарное кавычение для путей внутри shell-скрипта. */
+function sq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+/** Понятный текст для ошибок install/update (включая отмену запроса пароля). */
+function installErrorText(
+  verb: string,
+  r: { code: number; out: string; cancelled: boolean }
+): string {
+  if (r.cancelled) {
+    return `Не удалось ${verb} ZapretMac: запрос пароля администратора отменён.`
+  }
+  const detail = r.out.trim().split(/\r?\n/).slice(-3).join(' ').slice(0, 500)
+  return `Не удалось ${verb} ZapretMac (код ${r.code}).${detail ? ` ${detail}` : ''}`
 }
 
 let opLock: Promise<void> = Promise.resolve()
@@ -240,10 +314,10 @@ async function startZapretImpl(): Promise<void> {
     return
   }
   if (!isInstalled()) {
-    setStatus({
-      state: 'error',
-      lastError: 'Zapret не установлен. Сначала установите/обновите Zapret (потребуется пароль администратора).'
-    })
+    const msg =
+      'Zapret не установлен. Откройте страницу «Запрет» и нажмите «Установить/обновить» ' +
+      '(понадобится пароль администратора).'
+    setStatus({ state: 'error', lastError: msg })
     throw new Error('Zapret не установлен на macOS')
   }
 
@@ -255,7 +329,13 @@ async function startZapretImpl(): Promise<void> {
   log('info', `starting ZapretMac (strategy=${strategy})`)
 
   const script = `set -eu\n/bin/sh '${INSTALL}/restart.sh'\n`
-  await runAsAdminOnMac(script)
+  const r = await runAsAdminOnMac(script)
+  if (r.code !== 0) {
+    const msg = installErrorText('запустить', r)
+    log('error', msg)
+    setStatus({ state: 'error', lastError: msg })
+    throw new Error(msg)
+  }
 
   const ok = await waitForEngine()
   if (ok) {
@@ -278,10 +358,10 @@ async function stopZapretImpl(): Promise<void> {
   setStatus({ state: 'stopping', lastError: undefined })
   if (isInstalled()) {
     const script = `set -eu\n/bin/sh '${INSTALL}/stop.sh'\n`
-    try {
-      await runAsAdminOnMac(script)
-    } catch {
-      /* best-effort */
+    const r = await runAsAdminOnMac(script)
+    if (r.code !== 0) {
+      // Остановка best-effort: не роняем UI, но причина должна быть в логах.
+      log('warn', `stop.sh завершился с ошибкой: ${r.out.trim().slice(0, 300)}`)
     }
   }
   await new Promise((r) => setTimeout(r, 300))
