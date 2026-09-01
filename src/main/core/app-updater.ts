@@ -6,7 +6,7 @@ import { dataDir } from '../utils/dirs'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 
-const REPO = 'xdxdxdestra-svg/Slipgate'
+const REPO = 'xdxdxdestra-svg/SlipgateFIX'
 const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent': 'Slipgate-Updater',
