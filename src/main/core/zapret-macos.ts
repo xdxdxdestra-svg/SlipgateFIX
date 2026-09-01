@@ -678,11 +678,12 @@ async function startZapretImpl(): Promise<void> {
     })()
     setStatus({
       state: 'error',
-      lastError:
-        'utunws не запустился за 15с. ' +
-        (engineLogTail
-          ? `engine.log:\n${engineLogTail}\n\nПолная диагностика (launchctl + процессы) — в логе Slipgate.`
-          : 'Проверьте /Library/Application Support/ZapretMac/engine.log и лог Slipgate.')
+      lastError: engineLogTail
+        ? 'utunws не запустился за 15с.\nengine.log:\n' +
+          `${engineLogTail}\n\nПолная диагностика (launchctl + процессы) — в логе Slipgate.`
+        : // engine.log вообще не создан — Zapret даже не смог поднять сеть.
+          // Чаще всего это значит, что мешает активный системный/VPN-клиент.
+          'Отключите VPN и попробуйте запустить Zapret ещё раз.'
     })
     throw new Error('utunws did not start')
   }

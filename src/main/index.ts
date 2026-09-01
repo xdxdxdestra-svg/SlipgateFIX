@@ -278,6 +278,19 @@ export async function createWindow(appConfig?: AppConfig): Promise<void> {
     const trayOn = !cfg.disableTray
     const hideTaskbarOn = !!cfg.hideTaskbarIcon
 
+    if (process.platform === 'darwin') {
+      // macOS: the red (close) control must hide the window, never quit the
+      // app. The app stays in the Dock (and our tray if enabled), so it
+      // remains reachable — clicking the Dock icon fires 'activate' →
+      // showMainWindow(). Only drop it from the Dock if a tray icon exists to
+      // bring it back, mirroring the Windows taskbar-skip guard.
+      e.preventDefault()
+      const shouldSkip = hideTaskbarOn && trayOn && isTrayActive()
+      mainWindow?.setSkipTaskbar(shouldSkip)
+      mainWindow?.hide()
+      return
+    }
+
     if (trayOn && isTrayActive()) {
       e.preventDefault()
       if (hideTaskbarOn) {

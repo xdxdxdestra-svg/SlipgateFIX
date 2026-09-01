@@ -19,6 +19,7 @@ import {
   SidebarMenuItem,
   useSidebar
 } from '@renderer/components/ui/sidebar'
+import { platform } from '@renderer/utils/init'
 
 const nav = [
   { key: 'home',     path: '/home',     icon: HomeIcon,     label: 'Главная' },
@@ -40,9 +41,17 @@ const AppSidebar: React.FC = () => {
   const { resolvedTheme } = useTheme()
   const collapsed = state === 'collapsed'
   const logoSrc = resolvedTheme === 'light' ? logoLight : logoDark
+  const isMac = platform === 'darwin'
 
   return (
-    <Sidebar collapsible="icon" side="left" variant="floating">
+    <Sidebar
+      collapsible="icon"
+      side="left"
+      variant="floating"
+      // On macOS the custom traffic-light controls float at the top-left.
+      // Push the whole sidebar down so the logo/nav never sits under them.
+      className={isMac ? 'pt-12' : ''}
+    >
       <SidebarHeader className="h-14.25 p-0 flex items-center justify-center shrink-0">
         <img
           src={logoSrc}

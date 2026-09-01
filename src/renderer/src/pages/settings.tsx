@@ -1,4 +1,5 @@
 import { useAppConfig } from '@renderer/hooks/use-app-config'
+import { platform } from '@renderer/utils/init'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
@@ -14,6 +15,7 @@ const themeLabels: Record<AppTheme, string> = {
 
 const Settings: React.FC = () => {
   const { appConfig, patchAppConfig } = useAppConfig()
+  const isMac = platform === 'darwin'
 
   return (
     <BasePage title="Настройки">
@@ -47,19 +49,23 @@ const Settings: React.FC = () => {
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex items-center justify-between">
-            <Label className="text-sm">Запускать при входе в Windows</Label>
+            <Label className="text-sm">
+              {isMac ? 'Запускать при входе в macOS' : 'Запускать при входе в Windows'}
+            </Label>
             <Switch
               checked={appConfig?.autoLaunch ?? false}
               onCheckedChange={(v) => patchAppConfig({ autoLaunch: v })}
             />
           </div>
-          <div className="flex items-center justify-between">
-            <Label className="text-sm">Тихий старт (без окна)</Label>
-            <Switch
-              checked={appConfig?.silentStart ?? false}
-              onCheckedChange={(v) => patchAppConfig({ silentStart: v })}
-            />
-          </div>
+          {!isMac && (
+            <div className="flex items-center justify-between">
+              <Label className="text-sm">Тихий старт (без окна)</Label>
+              <Switch
+                checked={appConfig?.silentStart ?? false}
+                onCheckedChange={(v) => patchAppConfig({ silentStart: v })}
+              />
+            </div>
+          )}
           <div className="flex items-center justify-between">
             <Label className="text-sm">Автозапуск Telegram</Label>
             <Switch

@@ -76,6 +76,15 @@ const Zapret: React.FC = () => {
     })
   }
 
+  // macOS: when Zapret failed to start, let the user retry from the inline
+  // error banner instead of hunting for the toggle again.
+  const retryZapret = (): void => {
+    zapretStart().catch((e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast.error('Не удалось запустить Zapret', { description: msg })
+    })
+  }
+
   useEffect(() => {
     refreshStrategies()
     // Don't await; banner just stays hidden if the API call fails (rate-
@@ -89,6 +98,9 @@ const Zapret: React.FC = () => {
     }
 
     const t = setTimeout(() => {
+      // На macOS авто-тест при открытии страницы отключён — стратегии там
+      // подбираются иначе, и сам тест не нужен в интерфейсе Mac-версии.
+      if (isMac) return
       if (autoTestStartedRef.current) return
       const s = useZapretTestStore.getState()
       if (s.report || s.isRunning) return
@@ -368,16 +380,18 @@ const Zapret: React.FC = () => {
                   </span>
                 ) : null}
               </CardTitle>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={startTest}
-                disabled={strategies.length === 0}
-                className="shrink-0"
-              >
-                <FlaskConical className="h-3.5 w-3.5" />
-                {testReport ? 'Перетестировать' : 'Запустить тест'}
-              </Button>
+              {!isMac && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={startTest}
+                  disabled={strategies.length === 0}
+                  className="shrink-0"
+                >
+                  <FlaskConical className="h-3.5 w-3.5" />
+                  {testReport ? 'Перетестировать' : 'Запустить тест'}
+                </Button>
+              )}
             </>
           )}
         </CardHeader>
@@ -451,8 +465,13 @@ const Zapret: React.FC = () => {
 
       {status.lastError && (
         <Card className="border" style={POWER_OFF_BANNER_STYLE}>
-          <CardContent className="pt-4">
+          <CardContent className="pt-4 space-y-3">
             <p className="text-sm">{status.lastError}</p>
+            {isMac && status.state === 'error' && (
+              <Button size="sm" variant="outline" onClick={() => { void retryZapret() }}>
+                Попробовать еще раз
+              </Button>
+            )}
           </CardContent>
         </Card>
       )}

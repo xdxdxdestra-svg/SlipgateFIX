@@ -106,7 +106,12 @@ const App: React.FC = () => {
         }`}
       />
       {platform === 'darwin' && (
-        <div className="fixed top-0.5 -left-1 h-14.25 flex items-center pl-3 z-100 app-drag">
+        // macOS custom traffic-light controls. Pinned to the real macOS
+        // traffic-light spot (top ~12px / left ~20px) instead of being
+        // vertically centred inside a tall band, which made them sit "too
+        // low". The sidebar content is pushed down on macOS so nothing
+        // overlaps these controls.
+        <div className="fixed top-3 left-5 z-100 app-drag">
           <WindowControls />
         </div>
       )}
