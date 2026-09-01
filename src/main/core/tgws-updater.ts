@@ -129,6 +129,15 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
   let release: GhRelease
   try {
     const res = await fetch(RELEASES_LATEST_URL, { headers: REQUEST_HEADERS })
+    if (res.status === 404) {
+      // Зеркало ещё не создано/опубликовано — считаем, что обновлений нет,
+      // а не кидаем ошибку в UI. Актуально в окне до деплоя
+      // slipgate-tgws-cli-macos (и если релиз вдруг удалён).
+      const info: TgwsUpdateInfo = { installed, hasUpdate: false }
+      cache = { at: Date.now(), data: info }
+      saveUpdateCache(CACHE_NAME, info)
+      return info
+    }
     if (!res.ok) throw new Error(`GitHub API ${res.status}`)
     release = (await res.json()) as GhRelease
   } catch (e) {
