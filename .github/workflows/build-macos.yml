@@ -144,7 +144,7 @@ jobs:
             echo "attempt $i: querying Flowseal/zapret-mac-discord-youtube latest release"
             RESP=$(curl -sS -H 'User-Agent: slipgate-mac' ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} \
               https://api.github.com/repos/Flowseal/zapret-mac-discord-youtube/releases/latest)
-            URL=$(printf '%s' "$RESP" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const r=JSON.parse(d);const a=(r.assets||[]).find(x=>/ZapretMac-macOS-universal\.zip$/i.test(x.name));console.log(a?a.browser_download_url:'')}catch(e){console.log('')})")
+            URL=$(printf '%s' "$RESP" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const r=JSON.parse(d);const a=(r.assets||[]).find(x=>/ZapretMac-macOS-universal\.zip$/i.test(x.name));console.log(a?a.browser_download_url:'')}catch(e){console.log('')}})"
             if [ -n "$URL" ]; then break; fi
             echo "  empty/invalid URL (rate-limit or transient). API response head:"; printf '%s' "$RESP" | head -c 400; echo
             sleep 15
