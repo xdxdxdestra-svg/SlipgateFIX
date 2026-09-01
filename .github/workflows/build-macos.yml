@@ -31,15 +31,36 @@ jobs:
         id: ups
         shell: bash
         run: |
-          TAG=$(curl -s -H 'User-Agent: slipgate-mac' \
-            https://api.github.com/repos/Flowseal/tg-ws-proxy/releases/latest | \
-            node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).tag_name||''))")
+          TAG=""
+          for i in 1 2 3 4 5; do
+            TAG=$(curl -s -H 'User-Agent: slipgate-mac' \
+              https://api.github.com/repos/Flowseal/tg-ws-proxy/releases/latest | \
+              node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);console.log(j&&j.tag_name||'')}catch(e){console.log('')}})" )
+            [ -n "$TAG" ] && break
+            sleep 10
+          done
           echo "tag=${TAG:-1.6.6}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+          echo "resolved upstream tag: ${TAG:-1.6.6}"
+      - name: Checkout upstream (with retry)
+        uses: actions/checkout@v4
         with:
           repository: Flowseal/tg-ws-proxy
           ref: ${{ steps.ups.outputs.tag }}
           path: upstream
+        continue-on-error: true
+      - name: Ensure upstream cloned (retry on transient network failure)
+        shell: bash
+        run: |
+          if [ ! -f upstream/pyproject.toml ]; then
+            rm -rf upstream
+            for i in 1 2 3 4 5; do
+              echo "clone attempt $i"
+              git clone --depth 1 --branch "${{ steps.ups.outputs.tag }}" \
+                https://github.com/Flowseal/tg-ws-proxy.git upstream && break
+              sleep 10
+            done
+          fi
+          test -f upstream/pyproject.toml || { echo 'upstream clone failed'; exit 1; }
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
