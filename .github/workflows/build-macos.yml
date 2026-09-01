@@ -10,12 +10,22 @@ permissions:
 
 jobs:
   # 1) Сборка headless-CLI TgWsProxy для macOS из исходников Flowseal.
-  #    Mirror-репозиторий (xdxdxdestra-svg/slipgate-tgws-cli) публикует
-  #    только Windows-бинарник, поэтому универсальный macOS-CLI собираем здесь.
+  #    Mirror-репозиторий (xdxdxdestra-svg/slipgate-tgws-cli) публикует только
+  #    Windows-бинарник, поэтому macOS-CLI собираем здесь.
+  #    PyInstaller'а --target-arch universal2 требует universal2-сборку Python
+  #    (python.org), которой на hosted-раннерах нет — поэтому собираем два
+  #    thin-бинарника (x86_64 на Intel-раннере, arm64 на ARM-раннере) и
+  #    объединяем их через `lipo -create` в universal2.
   build-tgws-cli:
-    runs-on: macos-14
-    outputs:
-      tag: ${{ steps.ups.outputs.tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-13
+          - arch: arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Resolve upstream tag
         id: ups
@@ -45,17 +55,17 @@ jobs:
             with open('pyproject.toml', 'rb') as f:
               d = tomllib.load(f)
             deps = [x for x in d.get('project', {}).get('dependencies', [])
-                    if not re.match(r'^(pystray|pillow|customtkinter|pyperclip|pyobjc)', x)]
+                    if not re.match(r'^(pystray|customtkinter|pillow|pyperclip|pyobjc|pyobjc-framework)', x, re.I)]
           except FileNotFoundError:
             try:
               deps = [l for l in open('requirements.txt') if l.strip() and not l.startswith('#')
-                      and not re.match(r'^(pystray|pillow|customtkinter|pyperclip|pyobjc)', l)]
+                      and not re.match(r'^(pystray|customtkinter|pillow|pyperclip|pyobjc|pyobjc-framework)', l, re.I)]
             except FileNotFoundError:
               deps = []
           open('req-cli.txt', 'w').write('\n'.join(deps))
           PY
           pip install -r req-cli.txt
-      - name: Build universal2 CLI
+      - name: Build thin CLI (${{ matrix.arch }})
         shell: bash
         working-directory: upstream
         run: |
@@ -65,24 +75,57 @@ jobs:
               main()
           PY
           pyinstaller --onefile --console --name TgWsProxy \
-            --target-arch universal2 \
-            --collect-all certifi --collect-submodules proxy --collect-submodules cryptography \
+            --collect-all certifi \
             --hidden-import proxy --hidden-import proxy.tg_ws_proxy --hidden-import proxy.bridge \
             --hidden-import proxy.config --hidden-import proxy.balancer --hidden-import proxy.fake_tls \
             --hidden-import proxy.raw_websocket --hidden-import proxy.stats --hidden-import proxy.utils \
             --hidden-import utils.logging_setup \
-            --exclude-module pystray --exclude-module customtkinter --exclude-module PIL --exclude-module tkinter \
+            --exclude-module pystray --exclude-module customtkinter --exclude-module PIL \
+            --exclude-module tkinter --exclude-module macos --exclude-module windows --exclude-module linux \
             _cli.py
           test -f dist/TgWsProxy || { echo 'Build failed'; exit 1; }
           file dist/TgWsProxy
+          cp dist/TgWsProxy "TgWsProxy-${{ matrix.arch }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: tgws-cli-macos
-          path: upstream/dist/TgWsProxy
+          name: tgws-cli-${{ matrix.arch }}
+          path: upstream/TgWsProxy-${{ matrix.arch }}
+          if-no-files-found: error
 
-  # 2) Сборка Slipgate для macOS: x64, arm64, universal
-  build-mac:
+  # 1b) Объединяем x86_64 + arm64 в universal2 (lipo), заливаем один артефакт.
+  merge-tgws-cli:
     needs: build-tgws-cli
+    runs-on: macos-14
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tgws-cli-x86_64
+          path: cli-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tgws-cli-arm64
+          path: cli-arm64
+      - name: lipo -> universal2
+        run: |
+          chmod +x cli-x64/TgWsProxy-x86_64 cli-arm64/TgWsProxy-arm64
+          mkdir -p out
+          lipo -create \
+            cli-x64/TgWsProxy-x86_64 \
+            cli-arm64/TgWsProxy-arm64 \
+            -output out/TgWsProxy
+          file out/TgWsProxy
+          test "$(file -b out/TgWsProxy | grep -c 'x86_64')" -ge 1
+          test "$(file -b out/TgWsProxy | grep -c 'arm64')" -ge 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tgws-cli-macos-universal
+          path: out/TgWsProxy
+          if-no-files-found: error
+
+  # 2) Сборка Slipgate для macOS: x64, arm64, universal.
+  #    Во всех трёх используем universal2 CLI — он работает на любой arch.
+  build-mac:
+    needs: merge-tgws-cli
     strategy:
       fail-fast: false
       matrix:
@@ -108,10 +151,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: Fetch macOS tgws CLI
+      - name: Fetch macOS tgws CLI (universal2)
         uses: actions/download-artifact@v4
         with:
-          name: tgws-cli-macos
+          name: tgws-cli-macos-universal
           path: resources/macos/tgws
       - name: Fix exec bit + place binary
         run: |
