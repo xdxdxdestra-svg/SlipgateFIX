@@ -19,12 +19,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          cat > /tmp/extract_tag.js <<'TAG_EOF'
+          let d = '';
+          process.stdin.on('data', c => d += c);
+          process.stdin.on('end', () => {
+            try {
+              const j = JSON.parse(d);
+              console.log(j && j.tag_name ? j.tag_name : '');
+            } catch (e) {
+              console.log('');
+            }
+          });
+          TAG_EOF
           TAG=""
           for i in 1 2 3 4 5; do
             echo "attempt $i: querying Flowseal/tg-ws-proxy latest release"
             TAG=$(curl -sS -H 'User-Agent: slipgate-mac' ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} \
-              https://api.github.com/repos/Flowseal/tg-ws-proxy/releases/latest | \
-              node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);console.log(j&&j.tag_name||'')}catch(e){console.log('')}})" )
+              https://api.github.com/repos/Flowseal/tg-ws-proxy/releases/latest | node /tmp/extract_tag.js)
             [ -n "$TAG" ] && break
             echo "  empty/invalid response, retrying in 15s"; sleep 15
           done
@@ -139,12 +150,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
+          cat > /tmp/extract_zapret.js <<'ZAPRET_EOF'
+          let d = '';
+          process.stdin.on('data', c => d += c);
+          process.stdin.on('end', () => {
+            try {
+              const r = JSON.parse(d);
+              const a = (r.assets || []).find(x => /ZapretMac-macOS-universal\.zip$/i.test(x.name));
+              console.log(a ? a.browser_download_url : '');
+            } catch (e) {
+              console.log('');
+            }
+          });
+          ZAPRET_EOF
           URL=""
           for i in 1 2 3 4 5; do
             echo "attempt $i: querying Flowseal/zapret-mac-discord-youtube latest release"
             RESP=$(curl -sS -H 'User-Agent: slipgate-mac' ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} \
               https://api.github.com/repos/Flowseal/zapret-mac-discord-youtube/releases/latest)
-            URL=$(printf '%s' "$RESP" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const r=JSON.parse(d);const a=(r.assets||[]).find(x=>/ZapretMac-macOS-universal\.zip$/i.test(x.name));console.log(a?a.browser_download_url:'')}catch(e){console.log('')}})"
+            URL=$(printf '%s' "$RESP" | node /tmp/extract_zapret.js)
             if [ -n "$URL" ]; then break; fi
             echo "  empty/invalid URL (rate-limit or transient). API response head:"; printf '%s' "$RESP" | head -c 400; echo
             sleep 15
