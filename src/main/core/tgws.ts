@@ -301,6 +301,35 @@ async function startTgwsImpl(): Promise<void> {
     // Хвост вывода нужен, чтобы при падении показать настоящую причину
     // (например текст ошибки PyInstaller), а не только "exited with code 255".
     let tail = ''
+    // The self-built TgWsProxy (Python) prints its own severity prefix
+    // (INFO/WARNING/DEBUG/ERROR). We map it onto our log levels so we don't
+    // upgrade routine connection-attempt noise into app-level warnings.
+    // WARNINGs about CF-proxy 503s / TCP-fallback timeouts / handshake
+    // retries are expected on restricted networks and the proxy recovers
+    // automatically — those are demoted to 'info' so they stop spamming the
+    // warning view (see issue from the macOS logs).
+    const routeProxyLevel = (raw: string): ControllerLog['type'] => {
+      const m = /^\s*(INFO|WARNING|DEBUG|ERROR)\b/i.exec(raw)
+      if (m) {
+        const lvl = m[1].toUpperCase()
+        if (lvl === 'ERROR') return 'error'
+        if (lvl === 'DEBUG') return 'debug'
+        if (lvl === 'WARNING') {
+          if (
+            /proxy failed|fallback|timeouterror|service unavailable|no fallback available|handshake|connection refused|connection reset/i.test(
+              raw
+            )
+          ) {
+            return 'info'
+          }
+          return 'warn'
+        }
+        return 'info'
+      }
+      // No prefix (bare stderr line / stack-trace continuation) — keep the
+      // previous behaviour of treating stderr as a warning.
+      return 'warn'
+    }
     const feed = (buf: Buffer, type: ControllerLog['type']): void => {
       const text = buf.toString().trimEnd()
       if (!text) return
@@ -308,7 +337,13 @@ async function startTgwsImpl(): Promise<void> {
       log(type, text)
     }
     child.stdout?.on('data', (buf) => feed(buf, 'info'))
-    child.stderr?.on('data', (buf) => feed(buf, 'warn'))
+    child.stderr?.on('data', (buf) => {
+      const text = buf.toString()
+      for (const line of text.split('\n')) {
+        const trimmed = line.trimEnd()
+        if (trimmed) feed(Buffer.from(trimmed), routeProxyLevel(trimmed))
+      }
+    })
     child.on('error', (err) => {
       log('error', `child error: ${err.message}`)
       setStatus({ state: 'error', lastError: err.message, pid: undefined })
