@@ -140,10 +140,18 @@ jobs:
           test -n "$URL"
           curl -sL -o /tmp/zapret-mac.zip "$URL"
           mkdir -p /tmp/zapret-mac && cd /tmp/zapret-mac && unzip -o /tmp/zapret-mac.zip
+
+          # Находим каталог с файлами Zapret
           SRC=$(find /tmp/zapret-mac -name install.sh -exec dirname {} \; | head -1)
           test -n "$SRC"
-          rm -rf resources/macos/zapret
-          cp -R "$SRC" resources/macos/zapret
+
+          # Переходим обратно в корень репозитория и гарантированно создаем папку назначения
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p resources/macos/zapret
+
+          # Копируем содержимое (с флагом -a, чтобы корректно сохранить все права и вложенные каталоги)
+          cp -a "$SRC/." resources/macos/zapret/
+
           chmod +x resources/macos/zapret/*.sh resources/macos/zapret/bin/utunws || true
           test -f resources/macos/zapret/bin/utunws
           test -f resources/macos/zapret/strategies.tsv || find resources/macos/zapret -name strategies.tsv
