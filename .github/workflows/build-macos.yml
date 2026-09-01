@@ -201,6 +201,23 @@ jobs:
           test -f resources/macos/zapret/run.sh
           test -f resources/macos/zapret/strategies.tsv || find resources/macos/zapret -name strategies.tsv
 
+      - name: Apply Slipgate-patched run.sh
+        run: |
+          # The upstream payload fetched above copies its own run.sh over ours.
+          # Restore our hardened version (early engine.log logging + bounded
+          # network-detection retry) which ships in the repo and is what the app
+          # actually installs — it both fixes and diagnoses the silent pre-flight
+          # failure that left engine.log MISSING.
+          git checkout -- resources/macos/zapret/run.sh
+          chmod +x resources/macos/zapret/run.sh
+          test -f resources/macos/zapret/run.sh
+          if grep -q 'preflight' resources/macos/zapret/run.sh; then
+            echo "patched run.sh in place"
+          else
+            echo "::error::patched run.sh was not restored (grep 'preflight' not found)"
+            exit 1
+          fi
+
       - name: Install deps
         run: pnpm install --frozen-lockfile=false
 

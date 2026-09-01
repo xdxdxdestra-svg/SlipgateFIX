@@ -9,9 +9,19 @@ KEEPINIT_FILE=/var/db/zapret-macos.keepinit
 ENGINE_PID=
 WATCHDOG_PID=
 
+# ---- Early logging -------------------------------------------------------
+# Upstream run.sh only opens engine.log at the utunws spawn (near the end),
+# so any failure in the pre-flight phase (default route / gateway MAC / ARP /
+# lists) exited SILENTLY with no trace. We open it here so every early exit
+# leaves a readable reason. Truncate on start is intentional: a fresh run
+# replaces the previous attempt's notes; on success utunws appends below.
+: > "$BASE/engine.log" 2>/dev/null || true
+logf() { echo "[preflight $(/bin/date +%H:%M:%S)] $*" >> "$BASE/engine.log" 2>/dev/null || true; }
+logf "run.sh started (DATA_ROOT=$DATA_ROOT)"
+
 case "$DATA_ROOT" in
     /Users/*/'Library/Application Support/ZapretMac') ;;
-    *) exit 1 ;;
+    *) logf "DATA_ROOT format rejected: $DATA_ROOT"; exit 1 ;;
 esac
 
 if [ -s "$KEEPINIT_FILE" ]; then
@@ -44,14 +54,45 @@ trap cleanup EXIT INT TERM HUP
 clear_intercept
 /usr/bin/pkill -9 -x utunws >/dev/null 2>&1 || true
 
-PHYSICAL_IFACE=$(/sbin/route -n get default | /usr/bin/awk '/interface:/{print $2; exit}')
-GATEWAY=$(/sbin/route -n get default | /usr/bin/awk '/gateway:/{print $2; exit}')
-if [ -z "$PHYSICAL_IFACE" ] || [ -z "$GATEWAY" ]; then exit 1; fi
-/sbin/ping -c 1 -t 1 "$GATEWAY" >/dev/null 2>&1 || true
-GATEWAY_MAC=$(/usr/sbin/arp -n "$GATEWAY" | /usr/bin/awk '/ at /{print $4; exit}')
+# ---- Network detection with bounded retry --------------------------------
+# The default gateway / ARP entry may not be ready the instant the LaunchDaemon
+# (RunAtLoad) or a manual restart fires — e.g. Wi-Fi still associating, ARP
+# cache not yet populated. A single probe can therefore see an empty gateway
+# or an unresolved MAC and bail. Retry a few times (cheap, ~6s worst case) so
+# a transient "not ready yet" does not become a permanent silent failure.
+PHYSICAL_IFACE=
+GATEWAY=
+GATEWAY_MAC=
+ATTEMPT=0
+while [ "$ATTEMPT" -lt 6 ]; do
+    ATTEMPT=$((ATTEMPT + 1))
+    PHYSICAL_IFACE=$(/sbin/route -n get default | /usr/bin/awk '/interface:/{print $2; exit}')
+    GATEWAY=$(/sbin/route -n get default | /usr/bin/awk '/gateway:/{print $2; exit}')
+    if [ -n "$PHYSICAL_IFACE" ] && [ -n "$GATEWAY" ]; then
+        /sbin/ping -c 1 -t 1 "$GATEWAY" >/dev/null 2>&1 || true
+        GATEWAY_MAC=$(/usr/sbin/arp -n "$GATEWAY" | /usr/bin/awk '/ at /{print $4; exit}')
+        if [ -n "$GATEWAY_MAC" ]; then
+            logf "network ok: iface=$PHYSICAL_IFACE gateway=$GATEWAY mac=$GATEWAY_MAC (attempt $ATTEMPT)"
+            break
+        fi
+        logf "attempt $ATTEMPT: gateway=$GATEWAY reachable but MAC unresolved (arp empty)"
+    else
+        logf "attempt $ATTEMPT: default route incomplete (iface='$PHYSICAL_IFACE' gateway='$GATEWAY')"
+    fi
+    /bin/sleep 1
+done
+
+if [ -z "$PHYSICAL_IFACE" ] || [ -z "$GATEWAY" ]; then
+    logf "giving up: no default route after $ATTEMPT attempts"
+    exit 1
+fi
+if [ -z "$GATEWAY_MAC" ]; then
+    logf "giving up: gateway $GATEWAY MAC unresolved after $ATTEMPT attempts"
+    exit 1
+fi
 case "$GATEWAY_MAC" in
     *:*:*:*:*:*) ;;
-    *) exit 1 ;;
+    *) logf "GATEWAY_MAC '$GATEWAY_MAC' is not a valid MAC"; exit 1 ;;
 esac
 
 GATEWAY6_MAC=
@@ -65,15 +106,26 @@ fi
 
 STRATEGY=$(/usr/bin/tr -d '[:space:]' <"$DATA_ROOT/selected-strategy" 2>/dev/null || true)
 if ! printf '%s\n' "$STRATEGY" | /usr/bin/grep -Eq '^general(-[a-z0-9]+)*$' || [ ! -f "$BASE/strategies/$STRATEGY.conf.in" ]; then
+    logf "strategy '$STRATEGY' invalid or missing .conf.in — falling back to general-simple-fake"
     STRATEGY=general-simple-fake
 fi
+if [ ! -f "$BASE/strategies/$STRATEGY.conf.in" ]; then
+    logf "FATAL: strategy $STRATEGY has no $BASE/strategies/$STRATEGY.conf.in"
+    exit 1
+fi
 
-if [ -L "$DATA_ROOT" ] || [ -L "$DATA_ROOT/lists" ] || [ ! -d "$DATA_ROOT/lists" ]; then exit 1; fi
+if [ -L "$DATA_ROOT" ] || [ -L "$DATA_ROOT/lists" ] || [ ! -d "$DATA_ROOT/lists" ]; then
+    logf "lists dir missing or symlink: $DATA_ROOT/lists"
+    exit 1
+fi
 RUNTIME_LISTS="$BASE/lists"
 /bin/mkdir -p "$RUNTIME_LISTS"
 for NAME in list-general.txt list-general-user.txt list-google.txt list-exclude.txt list-exclude-user.txt ipset-all.txt ipset-exclude.txt ipset-exclude-user.txt; do
     SOURCE_LIST="$DATA_ROOT/lists/$NAME"
-    if [ -L "$SOURCE_LIST" ] || [ ! -f "$SOURCE_LIST" ]; then exit 1; fi
+    if [ -L "$SOURCE_LIST" ] || [ ! -f "$SOURCE_LIST" ]; then
+        logf "required list missing: $SOURCE_LIST"
+        exit 1
+    fi
     /usr/bin/install -m 0644 "$SOURCE_LIST" "$RUNTIME_LISTS/$NAME"
 done
 /usr/sbin/chown -R root:wheel "$RUNTIME_LISTS"
@@ -86,19 +138,24 @@ case "$IPSET_MODE" in
     *) IPSET="$BASE/ipset-none.txt" ;;
 esac
 
+logf "building pf config for strategy=$STRATEGY"
 /usr/bin/sed -e "s|@BASE@|$BASE|g" -e "s|@LISTS@|$RUNTIME_LISTS|g" -e "s|@IPSET@|$IPSET|g" "$BASE/strategies/$STRATEGY.conf.in" > /var/run/zapret-macos.conf
 
 export ZAPRET_IFACE="$PHYSICAL_IFACE"
 export ZAPRET_GATEWAY_MAC="$GATEWAY_MAC"
 export ZAPRET_GATEWAY6_MAC="$GATEWAY6_MAC"
 export ZAPRET_UTUN_UNIT=51
+logf "spawning utunws (strategy=$STRATEGY)"
 "$BASE/bin/utunws" @/var/run/zapret-macos.conf >>"$BASE/engine.log" 2>&1 &
 ENGINE_PID=$!
 
 I=0
 while ! /sbin/ifconfig utun50 >/dev/null 2>&1; do
     I=$((I + 1))
-    if ! kill -0 "$ENGINE_PID" 2>/dev/null || [ "$I" -gt 100 ]; then exit 1; fi
+    if ! kill -0 "$ENGINE_PID" 2>/dev/null || [ "$I" -gt 100 ]; then
+        logf "utunws died before utun50 appeared (I=$I)"
+        exit 1
+    fi
     sleep 0.1
 done
 /sbin/ifconfig utun50 10.77.0.1 10.77.0.2 netmask 255.255.255.255 up
@@ -115,10 +172,15 @@ printf '%s\n' \
   'pass out quick route-to (utun50 10.77.0.2) inet proto udp from any to any port {443,19294:19344,50000:50100} user { >root } no state' \
   | /sbin/pfctl -a "$ANCHOR" -f -
 
+logf "run.sh started successfully (strategy=$STRATEGY)"
 while kill -0 "$ENGINE_PID" 2>/dev/null; do
     sleep 2
     CURRENT_IFACE=$(/sbin/route -n get default 2>/dev/null | /usr/bin/awk '/interface:/{print $2; exit}')
     CURRENT_GATEWAY=$(/sbin/route -n get default 2>/dev/null | /usr/bin/awk '/gateway:/{print $2; exit}')
-    if [ "$CURRENT_IFACE" != "$PHYSICAL_IFACE" ] || [ "$CURRENT_GATEWAY" != "$GATEWAY" ]; then exit 1; fi
+    if [ "$CURRENT_IFACE" != "$PHYSICAL_IFACE" ] || [ "$CURRENT_GATEWAY" != "$GATEWAY" ]; then
+        logf "default route changed (iface $CURRENT_IFACE/$CURRENT_GATEWAY vs $PHYSICAL_IFACE/$GATEWAY) — exiting"
+        exit 1
+    fi
 done
+logf "utunws exited on its own"
 exit 1

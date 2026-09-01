@@ -290,6 +290,22 @@ export async function installZapretBundle(
     }
   }
 
+  // Всегда используем наш «усиленный» run.sh: zip из GitHub может принести
+  // другую версию, в которой префлайт-проверки сети (default route / gateway
+  // MAC / ARP) падают молча и демон не стартует. Наш run.sh логирует каждый
+  // шаг в engine.log и делает bounded-retry сетевого детекта — это одновременно
+  // и фикс, и диагностика «utunws не запустился».
+  const bundledRun = path.join(zapretBundleDir(), 'run.sh')
+  const destRun = path.join(dest, 'run.sh')
+  if (existsSync(bundledRun)) {
+    try {
+      copyFileSync(bundledRun, destRun)
+      chmodSync(destRun, 0o755)
+    } catch {
+      /* noop — fallback на run.sh из zip */
+    }
+  }
+
   if (!existsSync(path.join(dest, 'install.sh'))) {
     throw new Error(
       `Распакованный payload не содержит install.sh (префикс «${payloadPrefix}») — обновите Slipgate`
@@ -556,6 +572,35 @@ function collectZapretDiag(): string {
   } else {
     parts.push('engine.log: MISSING')
   }
+
+  // zapret.log — stdout/stderr демона (перенаправлены из plist). Туда попадают
+  // shell-ошибки run.sh, которые не дошли до engine.log (например, если
+  // какой-то встроенный вызов упал под set -e до наших logf).
+  const zlog = path.join(INSTALL, 'zapret.log')
+  if (existsSync(zlog)) {
+    try {
+      const tail = readFileSync(zlog, 'utf8').split(/\r?\n/).slice(-25).join('\n')
+      parts.push(`--- zapret.log (last 25 lines) ---\n${tail}`)
+    } catch {
+      /* noop */
+    }
+  } else {
+    parts.push('zapret.log: MISSING')
+  }
+
+  // Текущее состояние сети на момент диагностики. Может отличаться от момента
+  // сбоя run.sh, но показывает, есть ли сейчас default route и ARP-запись шлюза.
+  try {
+    const route = spawnSync('/sbin/route', ['-n', 'get', 'default'], { encoding: 'utf8' })
+    const routeOut = (route.stdout || '').trim()
+    if (routeOut) parts.push(`--- route -n get default ---\n${routeOut}`)
+    const arp = spawnSync('/usr/sbin/arp', ['-an'], { encoding: 'utf8' })
+    const arpOut = (arp.stdout || '').trim().split(/\r?\n/).slice(-12).join('\n')
+    if (arpOut) parts.push(`--- arp -an (last 12) ---\n${arpOut}`)
+  } catch {
+    /* noop */
+  }
+
   try {
     const lc = spawnSync(
       '/bin/launchctl',
