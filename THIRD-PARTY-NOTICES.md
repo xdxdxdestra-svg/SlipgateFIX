@@ -37,7 +37,7 @@ The bundled `TgWsProxy_windows.exe` is a CLI rebuild of
 
 - Upstream source: <https://github.com/Flowseal/tg-ws-proxy>
 - Slipgate's CLI rebuild mirror:
-  <https://github.com/tenstepsbeforedecay/slipgate-tgws-cli>
+  <https://github.com/xdxdxdestra-svg/slipgate-tgws-cli>
 - License: GNU General Public License v3.0
 - Copyright (C) Flowseal and tg-ws-proxy contributors
 
@@ -117,21 +117,21 @@ in at install time via `pnpm install`, are not redistributed in source
 form by Slipgate, and are governed by their own licenses (predominantly
 MIT, ISC and Apache-2.0). Notable bundled libraries:
 
-| Project | License | Purpose |
-| --- | --- | --- |
-| Electron | MIT | Desktop runtime |
-| React | MIT | UI framework |
-| Vite | MIT | Renderer bundler |
-| Tailwind CSS | MIT | Styling |
-| Radix UI / shadcn-ui | MIT | UI primitives |
-| Lucide | ISC | Icon set |
-| Zustand | MIT | State management |
-| Sonner | MIT | Toast notifications |
-| adm-zip | MIT | Zapret bundle unpack |
-| crypto-js | MIT | Hashing utilities |
-| axios | MIT | HTTP client |
-| react-router-dom | MIT | Routing |
-| @electron-toolkit/* | MIT | Electron integration helpers |
+| Project              | License | Purpose                      |
+| -------------------- | ------- | ---------------------------- |
+| Electron             | MIT     | Desktop runtime              |
+| React                | MIT     | UI framework                 |
+| Vite                 | MIT     | Renderer bundler             |
+| Tailwind CSS         | MIT     | Styling                      |
+| Radix UI / shadcn-ui | MIT     | UI primitives                |
+| Lucide               | ISC     | Icon set                     |
+| Zustand              | MIT     | State management             |
+| Sonner               | MIT     | Toast notifications          |
+| adm-zip              | MIT     | Zapret bundle unpack         |
+| crypto-js            | MIT     | Hashing utilities            |
+| axios                | MIT     | HTTP client                  |
+| react-router-dom     | MIT     | Routing                      |
+| @electron-toolkit/*  | MIT     | Electron integration helpers |
 
 Run `pnpm licenses list` (or `npm-license-checker`) on a checked-out
 copy of the repository to obtain a complete, per-package, machine-
@@ -141,11 +141,11 @@ readable list.
 
 ## How attribution works in practice
 
-* Every source file copied or substantially adapted from one of the
+- Every source file copied or substantially adapted from one of the
   upstreams above carries a header noting the original copyright and
   the date of modification, per the requirements of GPL-3.0 §5(a).
-* This file (`THIRD-PARTY-NOTICES.md`) and `LICENSE`, `COPYRIGHT` are
+- This file (`THIRD-PARTY-NOTICES.md`) and `LICENSE`, `COPYRIGHT` are
   shipped alongside every Slipgate release (source archive AND
   installer) so end users can always trace provenance.
-* If you find an upstream that should be acknowledged here and isn't,
+- If you find an upstream that should be acknowledged here and isn't,
   please open an issue on the Slipgate GitHub repo — we'll add it.

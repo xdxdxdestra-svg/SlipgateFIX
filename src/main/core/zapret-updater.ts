@@ -2,7 +2,11 @@ import { installZapretBundle } from './zapret'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 
-const REPO = 'Flowseal/zapret-discord-youtube'
+const IS_MAC = process.platform === 'darwin'
+
+// Windows: Flowseal/zapret-discord-youtube (winws + WinDivert).
+// macOS: Flowseal/zapret-mac-discord-youtube (utunws + pf + LaunchDaemon).
+const REPO = IS_MAC ? 'Flowseal/zapret-mac-discord-youtube' : 'Flowseal/zapret-discord-youtube'
 const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent': 'Slipgate-Updater',
@@ -89,7 +93,8 @@ function backgroundRefresh(): void {
     })
 }
 
-const BUNDLED_ZAPRET_VERSION = '1.9.8c'
+// Версия, вшитая в приложение (заполнитель "установлено", если конфиг пуст).
+const BUNDLED_ZAPRET_VERSION = IS_MAC ? '1.1.2' : '1.9.8c'
 
 function effectiveInstalled(cfgInstalled?: string): string {
   return cfgInstalled && cfgInstalled.trim() ? cfgInstalled.trim() : BUNDLED_ZAPRET_VERSION
@@ -129,13 +134,17 @@ export async function checkZapretUpdate(force = false): Promise<ZapretUpdateInfo
   const latest = latestRaw.replace(/^v/i, '').trim() || undefined
 
   const assets = release.assets ?? []
-  // Prefer the canonical "zapret-discord-youtube-*.zip" asset, fall back
-  // to any .zip if the maintainer renamed it.
-  const zipAsset =
-    assets.find((a) => /^zapret-discord-youtube.*\.zip$/i.test(a.name)) ??
-    assets.find((a) => /\.zip$/i.test(a.name))
+  // Windows: канонический "zapret-discord-youtube-*.zip", fallback на любой .zip.
+  // macOS: "ZapretMac-macOS-universal.zip" (universal2 — покрывает x64+arm64).
+  const zipAsset = IS_MAC
+    ? (assets.find((a) => /^ZapretMac-macOS-universal\.zip$/i.test(a.name)) ??
+      assets.find((a) => /^ZapretMac.*\.zip$/i.test(a.name)) ??
+      assets.find((a) => /\.zip$/i.test(a.name)))
+    : (assets.find((a) => /^zapret-discord-youtube.*\.zip$/i.test(a.name)) ??
+      assets.find((a) => /\.zip$/i.test(a.name)))
 
-  const hasUpdate = !!latest && compareVersion(latest, installed) > 0
+  const hasUpdate =
+    !!latest && compareVersion(latest, installed) > 0 && !!zipAsset
 
   const info: ZapretUpdateInfo = {
     installed,

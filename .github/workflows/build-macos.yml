@@ -1,0 +1,151 @@
+name: build-macos
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  # 1) Сборка headless-CLI TgWsProxy для macOS из исходников Flowseal.
+  #    Mirror-репозиторий (xdxdxdestra-svg/slipgate-tgws-cli) публикует
+  #    только Windows-бинарник, поэтому универсальный macOS-CLI собираем здесь.
+  build-tgws-cli:
+    runs-on: macos-14
+    outputs:
+      tag: ${{ steps.ups.outputs.tag }}
+    steps:
+      - name: Resolve upstream tag
+        id: ups
+        shell: bash
+        run: |
+          TAG=$(curl -s -H 'User-Agent: slipgate-mac' \
+            https://api.github.com/repos/Flowseal/tg-ws-proxy/releases/latest | \
+            node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).tag_name||''))")
+          echo "tag=${TAG:-1.6.6}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: Flowseal/tg-ws-proxy
+          ref: ${{ steps.ups.outputs.tag }}
+          path: upstream
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps (headless)
+        shell: bash
+        working-directory: upstream
+        run: |
+          pip install --upgrade pip pyinstaller certifi
+          python - <<'PY'
+          import tomllib, re
+          deps = []
+          try:
+            with open('pyproject.toml', 'rb') as f:
+              d = tomllib.load(f)
+            deps = [x for x in d.get('project', {}).get('dependencies', [])
+                    if not re.match(r'^(pystray|pillow|customtkinter|pyperclip|pyobjc)', x)]
+          except FileNotFoundError:
+            try:
+              deps = [l for l in open('requirements.txt') if l.strip() and not l.startswith('#')
+                      and not re.match(r'^(pystray|pillow|customtkinter|pyperclip|pyobjc)', l)]
+            except FileNotFoundError:
+              deps = []
+          open('req-cli.txt', 'w').write('\n'.join(deps))
+          PY
+          pip install -r req-cli.txt
+      - name: Build universal2 CLI
+        shell: bash
+        working-directory: upstream
+        run: |
+          cat > _cli.py <<'PY'
+          from proxy.tg_ws_proxy import main
+          if __name__ == '__main__':
+              main()
+          PY
+          pyinstaller --onefile --console --name TgWsProxy \
+            --target-arch universal2 \
+            --collect-all certifi --collect-submodules proxy --collect-submodules cryptography \
+            --hidden-import proxy --hidden-import proxy.tg_ws_proxy --hidden-import proxy.bridge \
+            --hidden-import proxy.config --hidden-import proxy.balancer --hidden-import proxy.fake_tls \
+            --hidden-import proxy.raw_websocket --hidden-import proxy.stats --hidden-import proxy.utils \
+            --hidden-import utils.logging_setup \
+            --exclude-module pystray --exclude-module customtkinter --exclude-module PIL --exclude-module tkinter \
+            _cli.py
+          test -f dist/TgWsProxy || { echo 'Build failed'; exit 1; }
+          file dist/TgWsProxy
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tgws-cli-macos
+          path: upstream/dist/TgWsProxy
+
+  # 2) Сборка Slipgate для macOS: x64, arm64, universal
+  build-mac:
+    needs: build-tgws-cli
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-13
+            eflag: '--x64'
+          - arch: arm64
+            runner: macos-14
+            eflag: '--arm64'
+          - arch: universal
+            runner: macos-14
+            eflag: '--universal'
+    runs-on: ${{ matrix.runner }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Fetch macOS tgws CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: tgws-cli-macos
+          path: resources/macos/tgws
+      - name: Fix exec bit + place binary
+        run: |
+          chmod +x resources/macos/tgws/TgWsProxy
+          test -x resources/macos/tgws/TgWsProxy
+          file resources/macos/tgws/TgWsProxy
+      - name: Fetch ZapretMac payload
+        run: |
+          set -e
+          URL=$(curl -s -H 'User-Agent: slipgate-mac' \
+            https://api.github.com/repos/Flowseal/zapret-mac-discord-youtube/releases/latest | \
+            node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const r=JSON.parse(d);const a=(r.assets||[]).find(x=>/ZapretMac-macOS-universal\.zip$/i.test(x.name));console.log(a?a.browser_download_url:'')})")
+          test -n "$URL"
+          curl -sL -o /tmp/zapret-mac.zip "$URL"
+          mkdir -p /tmp/zapret-mac && cd /tmp/zapret-mac && unzip -o /tmp/zapret-mac.zip
+          # нормализуем к expected структуре: ищем install.sh (верхний уровень или на 1-2 уровня глубже)
+          SRC=$(find /tmp/zapret-mac -name install.sh -exec dirname {} \; | head -1)
+          test -n "$SRC"
+          rm -rf resources/macos/zapret
+          cp -R "$SRC" resources/macos/zapret
+          chmod +x resources/macos/zapret/*.sh resources/macos/zapret/bin/utunws || true
+          test -f resources/macos/zapret/bin/utunws
+          test -f resources/macos/zapret/strategies.tsv || find resources/macos/zapret -name strategies.tsv
+      - name: Install deps
+        run: pnpm install --frozen-lockfile=false
+      - name: Build + package
+        run: |
+          pnpm exec electron-vite build
+          pnpm exec electron-builder --publish never --mac ${{ matrix.eflag }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slipgate-macos-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.pkg
+          if-no-files-found: error

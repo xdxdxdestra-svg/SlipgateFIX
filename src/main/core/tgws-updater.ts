@@ -6,7 +6,10 @@ import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 import { stopTgws, getTgwsStatus } from './tgws'
 
-const REPO = 'tenstepsbeforedecay/slipgate-tgws-cli'
+const IS_MAC = process.platform === 'darwin'
+const BIN_NAME = IS_MAC ? 'TgWsProxy' : 'TgWsProxy_windows.exe'
+
+const REPO = 'xdxdxdestra-svg/slipgate-tgws-cli'
 const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent': 'Slipgate-Updater',
@@ -118,20 +121,27 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
     if (!res.ok) throw new Error(`GitHub API ${res.status}`)
     release = (await res.json()) as GhRelease
   } catch (e) {
-    throw new Error(`Не удалось проверить обновления TgWsProxy: ${e instanceof Error ? e.message : String(e)}`)
+    throw new Error(
+      `Не удалось проверить обновления TgWsProxy: ${e instanceof Error ? e.message : String(e)}`
+    )
   }
 
   const latestRaw = release.tag_name ?? release.name ?? ''
   const latest = latestRaw.replace(/^v/i, '').trim() || undefined
 
-  // Strict 64-bit Windows binary match: the release also ships a Win-7 32-bit
-  // build we don't want to install on modern systems.
+  // Windows: строго 64-bit "TgWsProxy_windows.exe" (в релизе есть и Win-7
+  // 32-bit сборка, которую мы не хотим ставить).
+  // macOS: ищем CLI-бинарник "TgWsProxy_macos*" / "TgWsProxy_universal*".
+  // Пока mirror-репозиторий публикует только Windows-бинарник, macOS-asset
+  // не находится → hasUpdate = false, но latest/уведомление остаются честными.
   const assets = release.assets ?? []
-  const winAsset =
-    assets.find((a) => /^TgWsProxy_windows\.exe$/i.test(a.name)) ??
-    assets.find((a) => /^TgWsProxy_windows.*\.exe$/i.test(a.name) && !/32bit/i.test(a.name))
+  const winAsset = IS_MAC
+    ? (assets.find((a) => /^TgWsProxy.*(macos|darwin|universal|osx)/i.test(a.name)) ??
+      assets.find((a) => /^TgWsProxy[^.]*$/i.test(a.name)))
+    : (assets.find((a) => /^TgWsProxy_windows\.exe$/i.test(a.name)) ??
+      assets.find((a) => /^TgWsProxy_windows.*\.exe$/i.test(a.name) && !/32bit/i.test(a.name)))
 
-  const hasUpdate = !!latest && compareVersion(latest, installed) > 0
+  const hasUpdate = !!latest && compareVersion(latest, installed) > 0 && !!winAsset
 
   const info: TgwsUpdateInfo = {
     installed,
@@ -153,9 +163,20 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
   return info
 }
 
-// Best-effort kill of any leftover TgWsProxy_windows.exe so we can overwrite
-// the binary on Windows (where a running .exe holds an exclusive write lock).
+// Best-effort kill of any leftover TgWsProxy binary so we can overwrite it
+// (a running .exe holds an exclusive write lock on Windows; on macOS the
+// running Mach-O doesn't lock the file, but a stray process would conflict
+// with the new instance on next start).
 async function killStaleTgwsBinary(): Promise<void> {
+  if (IS_MAC) {
+    await new Promise<void>((resolve) => {
+      const p = spawn('/usr/bin/pkill', ['-9', '-f', 'TgWsProxy'])
+      p.on('exit', () => resolve())
+      p.on('error', () => resolve())
+    })
+    await new Promise((r) => setTimeout(r, 300))
+    return
+  }
   if (process.platform !== 'win32') return
   await new Promise<void>((resolve) => {
     const p = spawn('taskkill.exe', ['/F', '/IM', 'TgWsProxy_windows.exe', '/T'], {
@@ -178,7 +199,11 @@ export async function installTgwsUpdate(
   // locked. Mirrors the zapret install flow.
   const st = getTgwsStatus()
   if (st.state === 'running' || st.state === 'starting') {
-    try { await stopTgws() } catch { /* best-effort */ }
+    try {
+      await stopTgws()
+    } catch {
+      /* best-effort */
+    }
   }
   // Even after our managed stop there can be a stray TgWsProxy_windows.exe
   // (manual user launch, prior crash) — wipe everything matching the image
@@ -196,14 +221,14 @@ export async function installTgwsUpdate(
   }
 
   if (buf.length < 1024 * 1024) {
-    // Smallest legitimate Win build is ~14 MB; anything below 1 MB is a
-    // 404 page or a redirect we failed to follow.
+    // Smallest legitimate build is ~14 MB (Win) / ~10 MB (macOS CLI);
+    // anything below 1 MB is a 404 page or a redirect we failed to follow.
     throw new Error(`Загруженный файл слишком маленький (${buf.length} байт)`)
   }
 
   const dir = tgwsRuntimeDir()
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  const dest = path.join(dir, 'TgWsProxy_windows.exe')
+  const dest = path.join(dir, BIN_NAME)
   writeFileSync(dest, buf)
 
   // Persist version + clear "Later" dismissal.

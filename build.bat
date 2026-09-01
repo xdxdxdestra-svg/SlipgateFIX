@@ -100,7 +100,7 @@ echo Wiping production userData and autostart entries (--clean) ...
 if exist "%APPDATA%\slipgate" rmdir /s /q "%APPDATA%\slipgate" >nul 2>nul
 if exist "%APPDATA%\Slipgate" rmdir /s /q "%APPDATA%\Slipgate" >nul 2>nul
 REM Leftovers from Flowseal's tray-GUI build of TgWsProxy. We now ship
-REM a headless CLI mirror via tenstepsbeforedecay/slipgate-tgws-cli, but
+REM a headless CLI mirror via xdxdxdestra-svg/slipgate-tgws-cli, but
 REM if a user previously got the upstream tray exe through auto-update
 REM their %APPDATA%\TgWsProxy ends up holding a config.json with a
 REM stale secret/host (different from Slipgate's), which surfaces as

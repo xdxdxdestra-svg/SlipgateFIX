@@ -79,9 +79,24 @@ function tryListen(host: string, port: number): Promise<{ free: true } | { free:
 }
 
 async function killStaleTgws(): Promise<boolean> {
-  // Kill any leftover TgWsProxy_windows.exe — typically a previous Slipgate
+  // Kill any leftover TgWsProxy binary — typically a previous Slipgate
   // process that crashed without releasing the port. This is safe because the
   // binary is unique to our app; users normally don't run it standalone.
+  if (process.platform === 'darwin') {
+    try {
+      await new Promise<void>((resolve) => {
+        const p = spawn('/usr/bin/pkill', ['-9', '-f', 'TgWsProxy'])
+        p.on('exit', () => resolve())
+        p.on('error', () => resolve())
+      })
+      log('info', 'stale TgWsProxy instances killed')
+      // Give macOS time to release the port.
+      await new Promise((r) => setTimeout(r, 500))
+      return true
+    } catch {
+      return false
+    }
+  }
   if (process.platform !== 'win32') return false
   try {
     await new Promise<void>((resolve) => {

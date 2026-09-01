@@ -81,6 +81,11 @@ function buildTaskXml(exe: string): string {
 
 export async function enableAutoRun(): Promise<void> {
   if (is.dev) return
+  if (process.platform === 'darwin') {
+    // macOS: Login Item (LaunchAgent) через Electron API — без системного демона.
+    app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true })
+    return
+  }
   // Migrate away from any legacy HKCU\Run entry.
   clearLegacyRunEntry()
   const exe = exePath()
@@ -105,6 +110,10 @@ export async function enableAutoRun(): Promise<void> {
 
 export async function disableAutoRun(): Promise<void> {
   if (is.dev) return
+  if (process.platform === 'darwin') {
+    app.setLoginItemSettings({ openAtLogin: false })
+    return
+  }
   clearLegacyRunEntry()
   // /F forces silent removal even if task is missing or running.
   await runSchtasks(['/Delete', '/F', '/TN', TASK_NAME])
@@ -112,6 +121,9 @@ export async function disableAutoRun(): Promise<void> {
 
 export async function isAutoRun(): Promise<boolean> {
   if (is.dev) return false
+  if (process.platform === 'darwin') {
+    return app.getLoginItemSettings().openAtLogin
+  }
   const r = await runSchtasks(['/Query', '/TN', TASK_NAME])
   return r.code === 0
 }

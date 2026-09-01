@@ -235,6 +235,24 @@ export function runStrategyTests(): Promise<StrategyTestReport> {
   runningPromise = (async () => {
     const startedAt = Date.now()
 
+    // Стратегии-тестер на macOS пока недоступен: он завязан на Windows
+    // (winws.exe + cmd.exe + WinDivert). Честный ранний выход вместо
+    // попытки выполнить .bat-стратегии на macOS.
+    if (process.platform === 'darwin') {
+      const empty: StrategyTestReport = {
+        ranAt: startedAt,
+        durationMs: 0,
+        results: {}
+      }
+      saveReport(empty)
+      broadcast('zapret:testProgress', {
+        phase: 'error',
+        message: 'Тест стратегий на macOS пока недоступен',
+        report: empty
+      })
+      return empty
+    }
+
     const strategies = listStrategies()
     const total = strategies.length
     if (total === 0) {

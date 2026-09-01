@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, copyFileSync, statSync } from 'node:fs'
 import path from 'node:path'
+import { app } from 'electron'
 import { zapretBundleDir } from '../utils/dirs'
 
 export interface CuratedIpSet {
@@ -136,15 +137,25 @@ export function getCuratedIpSets(): CuratedIpSet[] {
   return CURATED_IP_SETS.map((s) => ({ ...s, cidrs: [...s.cidrs] }))
 }
 
+function listsDir(): string {
+  // Windows: Zapret читает hostlist из распакованного bundle в resources/.
+  // macOS: ZapretMac читает hostlist из ~/Library/Application Support/ZapretMac/lists/
+  // (формат DATA_ROOT, заданный run.sh upstream).
+  if (process.platform === 'darwin') {
+    return path.join(app.getPath('home'), 'Library', 'Application Support', 'ZapretMac', 'lists')
+  }
+  return path.join(zapretBundleDir(), 'lists')
+}
+
 function listFile(): string {
-  return path.join(zapretBundleDir(), 'lists', 'list-general.txt')
+  return path.join(listsDir(), 'list-general.txt')
 }
 
 function backupFile(): string {
   // No upstream backup is shipped for list-general.txt — we mint one
   // ourselves on first edit (see ensureBackup) so «restore from backup»
   // can roll back to the original Flowseal hostlist.
-  return path.join(zapretBundleDir(), 'lists', 'list-general.txt.backup')
+  return path.join(listsDir(), 'list-general.txt.backup')
 }
 
 function isValidCidr(line: string): boolean {

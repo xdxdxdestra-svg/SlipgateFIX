@@ -2,7 +2,7 @@
 import { app, BrowserWindow, dialog, Menu, shell } from 'electron'
 import windowStateKeeper from 'electron-window-state'
 import { join } from 'path'
-import icon from '../../resources/icon.png?asset'
+import icon from '../../resources/common/icon.png?asset'
 import { registerIpcMainHandlers } from './utils/ipc'
 import { init } from './utils/init'
 import { getAppConfig, getAppConfigSync } from './config'
@@ -151,6 +151,17 @@ let isQuitting = false
  * errors (services that aren't loaded, processes that no longer exist, etc.).
  */
 function syncKillChildren(): void {
+  if (process.platform === 'darwin') {
+    // macOS: те же процессы, но через pkill (нет taskkill/sc.exe).
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { spawnSync } = require('child_process') as typeof import('child_process')
+      const opts = { timeout: 2000 } as const
+      spawnSync('/usr/bin/pkill', ['-9', '-f', 'TgWsProxy'], opts)
+      spawnSync('/usr/bin/pkill', ['-9', '-x', 'utunws'], opts)
+    } catch { /* noop */ }
+    return
+  }
   if (process.platform !== 'win32') return
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports

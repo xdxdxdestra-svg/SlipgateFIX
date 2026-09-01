@@ -6,7 +6,7 @@ import { dataDir } from '../utils/dirs'
 import { getAppConfig, patchAppConfig } from '../config'
 import { loadUpdateCache, saveUpdateCache } from '../utils/update-cache'
 
-const REPO = 'tenstepsbeforedecay/Slipgate'
+const REPO = 'xdxdxdestra-svg/Slipgate'
 const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent': 'Slipgate-Updater',
@@ -219,9 +219,7 @@ export async function installAppUpdate(
     const ab = await res.arrayBuffer()
     buf = Buffer.from(ab)
   } catch (e) {
-    throw new Error(
-      `Не удалось скачать установщик: ${e instanceof Error ? e.message : String(e)}`
-    )
+    throw new Error(`Не удалось скачать установщик: ${e instanceof Error ? e.message : String(e)}`)
   }
 
   if (buf.length < 5 * 1024 * 1024) {
@@ -279,7 +277,7 @@ export async function installAppUpdate(
         // can ask users to attach %TEMP%\Slipgate-relaunch-*.log when
         // a future bug report comes in.
         'function Log($m) {',
-        "  try { Add-Content -LiteralPath $logPath -Value \"$([DateTime]::Now.ToString('HH:mm:ss.fff')) $m\" } catch {}",
+        '  try { Add-Content -LiteralPath $logPath -Value "$([DateTime]::Now.ToString(\'HH:mm:ss.fff\')) $m" } catch {}',
         '}',
         'Log \"watcher started, installerPid=$installerPid exe=$exe\"',
         // 1) Wait for the installer to finish (up to 5 min — silent NSIS
@@ -337,9 +335,7 @@ export async function installAppUpdate(
           windowsHide: true
         }
       )
-      watcher.on('error', (e) =>
-        console.error('[app-updater] relaunch watcher spawn error:', e)
-      )
+      watcher.on('error', (e) => console.error('[app-updater] relaunch watcher spawn error:', e))
       watcher.unref()
     } catch (e) {
       // Watcher is best-effort — if it fails the user just has to

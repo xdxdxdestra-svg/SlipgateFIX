@@ -76,11 +76,21 @@ export function tgwsRuntimeDir(): string {
   return path.join(runtimeDir(), 'tgws')
 }
 
+const IS_MAC = process.platform === 'darwin'
+// В dev-режиме ресурсы лежат в resources/<platform>/; в packaged-режиме
+// electron-builder раскладывает resources/common + resources/<platform>
+// плоско в resources/ (to: ''), поэтому плоский путь — основной кандидат.
+const PLATFORM_DIR = IS_MAC ? 'macos' : 'windows'
+const TGWS_BIN_NAME = IS_MAC ? 'TgWsProxy' : 'TgWsProxy_windows.exe'
+const ZAPRET_MARKER = IS_MAC ? 'bin/utunws' : 'general.bat'
+
 export function tgwsBinaryPath(): string {
-  // Check runtime dir first (downloaded updates), fall back to bundled resources/.
-  const rt = path.join(tgwsRuntimeDir(), 'TgWsProxy_windows.exe')
+  // Runtime dir first (downloaded updates), then bundled resources/.
+  const rt = path.join(tgwsRuntimeDir(), TGWS_BIN_NAME)
   if (existsSync(rt)) return rt
-  return path.join(resourcesDir(), 'tgws', 'TgWsProxy_windows.exe')
+  const flat = path.join(resourcesDir(), 'tgws', TGWS_BIN_NAME) // packaged (плоско)
+  if (existsSync(flat)) return flat
+  return path.join(resourcesDir(), PLATFORM_DIR, 'tgws', TGWS_BIN_NAME) // dev
 }
 
 export function zapretRuntimeDir(): string {
@@ -89,10 +99,12 @@ export function zapretRuntimeDir(): string {
 
 export function zapretBundleDir(): string {
   const rt = zapretRuntimeDir()
-  if (existsSync(path.join(rt, 'general.bat'))) return rt
-  return path.join(resourcesDir(), 'zapret')
+  if (existsSync(path.join(rt, ZAPRET_MARKER))) return rt
+  const flat = path.join(resourcesDir(), 'zapret') // packaged (плоско)
+  if (existsSync(path.join(flat, ZAPRET_MARKER))) return flat
+  return path.join(resourcesDir(), PLATFORM_DIR, 'zapret') // dev
 }
 
 export function zapretBinaryPath(): string {
-  return path.join(zapretBundleDir(), 'bin', 'winws.exe')
+  return path.join(zapretBundleDir(), 'bin', IS_MAC ? 'utunws' : 'winws.exe')
 }

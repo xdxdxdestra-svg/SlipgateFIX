@@ -1,16 +1,12 @@
 appId: com.slipgate.app
 productName: Slipgate
-# Trim Chromium's locale pack from ~42 MB (55 files) to ~1.5 MB by shipping
-# only the languages the Slipgate UI actually uses. The renderer is fully
-# Russian; en-US stays as a fallback for system-level Chromium prompts
-# (form validation, default context-menu strings) when ru is unavailable.
 electronLanguages:
   - en-US
   - ru
 directories:
   buildResources: build
 files:
-  - '!**/.vscode/*'
+  - '!/.vscode/*'
   - '!src/*'
   - '!aur/*'
   - '!images/*'
@@ -22,36 +18,16 @@ files:
   - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+# Общие ресурсы (иконки и т.п.) — попадают в обе платформы. Кладутся плоско
+# в resources/ корня приложения (to: ''), как было раньше.
 extraResources:
-  # Slipgate runtime assets only — everything we actually need at runtime
-  # lives under ./resources (zapret strategies, tray icons, TgWsProxy,
-  # winws.exe, WinDivert, ...). No proxy core (mihomo) is bundled because
-  # Slipgate doesn't run one — that would just bloat the installer.
-  - from: './resources/'
+  - from: './resources/common/'
     to: ''
     filter:
       - '**/*'
-      - '!**/.git/**'
-      - '!**/.github/**'
-      - '!**/.service/**'
-      - '!**/.gitignore'
-      - '!**/.gitattributes'
-      - '!**/README.md'
-      - '!**/LICENSE.txt'
-      # Drop ~600 KB of zapret cruft that the app never touches at runtime:
-      # *.backup files (e.g. ipset-all.txt.backup, 538 KB) are leftovers from
-      # upstream maintainer commits, and zapret/utils/ holds an interactive
-      # PowerShell test-suite + targets list used only when running the
-      # standalone `service.bat` menu manually. Slipgate spawns winws.exe
-      # directly, so none of this ships value to end users.
-      - '!**/*.backup'
-      - '!**/zapret/utils/**'
 protocols:
   name: 'Slipgate URI Scheme'
   schemes:
-    # Slipgate registers two custom protocols at runtime via
-    # `app.setAsDefaultProtocolClient` (see src/main/utils/init.ts).
-    # Keep this list in sync with that file.
     - 'slipgate'
     - 'tg-ws'
 win:
@@ -59,11 +35,17 @@ win:
     - nsis
     - 7z
   artifactName: ${productName}_${arch}-portable.${ext}
-  # Embed an UAC manifest in Slipgate.exe so Windows always prompts for
-  # admin elevation when launched. Required because zapret's winws.exe
-  # opens WinDivert which needs SYSTEM-level packet capture rights;
-  # without elevation on the parent we'd UAC-prompt on every Zapret toggle.
   requestedExecutionLevel: requireAdministrator
+  # Только Windows-ресурсы: winws.exe, WinDivert, .bat стратегии, TgWsProxy_windows.exe
+  extraResources:
+    - from: './resources/common/'
+      to: ''
+      filter:
+        - '**/*'
+    - from: './resources/windows/'
+      to: ''
+      filter:
+        - '**/*'
 nsis:
   artifactName: ${productName}_${arch}.${ext}
   uninstallDisplayName: ${productName}
@@ -74,23 +56,27 @@ nsis:
   include: build/nsis/installer.nsh
 mac:
   target:
-    - pkg
+    - dmg
+    - zip
+    # - pkg    # опционально; требует подписи/notarize — по умолчанию выключен
+  # hardenedRuntime требует валидную подпись; без сертификата CI собирает с
+  # ad-hoc подписью (CSC_IDENTITY_AUTO_DISCOVERY=false). Оставляем hardenedRuntime: true
+  # и entitlements без sandbox (для работы сетевого backend).
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false
-  extendInfo:
-    - NSCameraUsageDescription: Application requests access to the device's camera.
-    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   artifactName: ${productName}_${arch}.${ext}
-pkg:
-  allowAnywhere: false
-  allowCurrentUserHome: false
-  # background:
-  #   alignment: bottomleft
-  #   file: build/background.png
+  # Только macOS-ресурсы: utunws/payload ZapretMac + TgWsProxy (universal2 CLI)
+  extraResources:
+    - from: './resources/common/'
+      to: ''
+      filter:
+        - '**/*'
+    - from: './resources/macos/'
+      to: ''
+      filter:
+        - '**/*'
 linux:
   desktop:
     entry:
@@ -100,15 +86,5 @@ linux:
     - deb
     - rpm
     - pacman
-  maintainer: Slipgate
-  category: Utility
-  artifactName: ${productName}_${arch}.${ext}
-deb:
-  afterInstall: 'build/linux/postinst'
-rpm:
-  afterInstall: 'build/linux/postinst'
-pacman:
-  afterInstall: 'build/linux/postinst'
-  artifactName: ${productName}_${arch}.pkg.tar.xz
 npmRebuild: true
 publish: []

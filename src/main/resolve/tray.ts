@@ -63,10 +63,16 @@ function iconPath(on: boolean): string {
   }
   candidates.push(resolve(app.getAppPath(), 'resources', ico))
   candidates.push(resolve(app.getAppPath(), 'resources', png))
+  // Dev-режим: иконки лежат в resources/common/ (packaged раскладывает
+  // common/ плоско в resources/, поэтому кандидаты выше покрывают его).
+  candidates.push(resolve(app.getAppPath(), 'resources', 'common', ico))
+  candidates.push(resolve(app.getAppPath(), 'resources', 'common', png))
   // Last-ditch fallback: project root from compiled main location
   // (out/main/<file>.js -> ../../resources/icon.ico).
   candidates.push(resolve(__dirname, '../../resources', ico))
   candidates.push(resolve(__dirname, '../../resources', png))
+  candidates.push(resolve(__dirname, '../../resources/common', ico))
+  candidates.push(resolve(__dirname, '../../resources/common', png))
 
   for (const c of candidates) {
     if (existsSync(c)) {
