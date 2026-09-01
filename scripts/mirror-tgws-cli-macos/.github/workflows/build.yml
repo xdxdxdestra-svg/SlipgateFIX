@@ -7,18 +7,10 @@ name: mirror-tgws-macos
 # under the SAME tag as upstream.
 
 on:
-  # Daily, off-peak UTC — catches new upstream releases automatically.
+  # Daily, off-peak UTC - catches new upstream releases automatically.
   schedule:
     - cron: '23 3 * * *'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Upstream Flowseal/tg-ws-proxy tag to mirror (e.g. v1.10.0). Leave empty for latest.'
-        required: false
-      force:
-        description: 'Rebuild and re-publish even if the tag is already mirrored'
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -39,26 +31,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${{ inputs.tag }}"
-          if [ -z "$TAG" ]; then
-            cat > /tmp/extract_tag.js <<'TAG_EOF'
-            let d = '';
-            process.stdin.on('data', c => d += c);
-            process.stdin.on('end', () => {
-              try {
-                const j = JSON.parse(d);
-                console.log(j && j.tag_name ? j.tag_name : '');
-              } catch (e) { console.log(''); }
-            });
-            TAG_EOF
-            for i in 1 2 3 4 5; do
-              echo "attempt $i: querying Flowseal/tg-ws-proxy latest release"
-              TAG=$(curl -sS -H 'User-Agent: slipgate-mirror' ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} \
-                https://api.github.com/repos/Flowseal/tg-ws-proxy/releases/latest | node /tmp/extract_tag.js)
-              [ -n "$TAG" ] && break
-              echo "  empty/invalid response, retrying in 15s"; sleep 15
-            done
-          fi
+          for i in 1 2 3 4 5; do
+            echo "attempt $i: resolving Flowseal/tg-ws-proxy latest release"
+            TAG=$(gh api repos/Flowseal/tg-ws-proxy/releases/latest --jq '.tag_name' 2>/dev/null || true)
+            [ -n "$TAG" ] && break
+            echo "  empty/invalid response, retrying in 15s"; sleep 15
+          done
           if [ -z "$TAG" ]; then
             echo "::error::Could not resolve upstream tag"
             exit 1
@@ -66,24 +44,15 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "resolved upstream tag: $TAG"
 
-      - name: Clear existing mirror (force)
-        if: inputs.force == true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          gh release delete "${{ steps.ups.outputs.tag }}" --repo "${{ github.repository }}" --yes || true
-
       - name: Already mirrored?
         id: skip
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          if [ "${{ inputs.force }}" != "true" ] && \
-             gh release view "${{ steps.ups.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+          if gh release view "${{ steps.ups.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "already mirrored: ${{ steps.ups.outputs.tag }} — skipping (use force to rebuild)"
+            echo "already mirrored: ${{ steps.ups.outputs.tag }} — skipping"
           fi
 
       - name: Checkout upstream (with retry)
@@ -184,9 +153,7 @@ jobs:
           gh release create "${{ steps.ups.outputs.tag }}" \
             --repo "${{ github.repository }}" \
             --title "TgWsProxy CLI ${{ steps.ups.outputs.tag }} (macOS arm64)" \
-            --notes "Automated macOS (arm64) headless CLI mirror of Flowseal/tg-ws-proxy @ ${{ steps.ups.outputs.tag }}.
-
-Built with PyInstaller --onefile --console --target-arch arm64. Consumed by Slipgate's tgws-updater (slipgate-tgws-cli-macos)." \
+            --notes "Automated macOS (arm64) headless CLI mirror of Flowseal/tg-ws-proxy @ ${{ steps.ups.outputs.tag }}. Built with PyInstaller --onefile --console --target-arch arm64. Consumed by Slipgate's tgws-updater (slipgate-tgws-cli-macos)." \
             ./upstream/dist/TgWsProxy#TgWsProxy
 
       - name: Notify on failure
