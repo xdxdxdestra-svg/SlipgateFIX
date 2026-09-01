@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue.svg"></a>
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-informational">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20macOS%20(alpha)-informational">
   <img alt="Electron" src="https://img.shields.io/badge/electron-37-9feaf9">
   <img alt="React" src="https://img.shields.io/badge/react-19-61dafb">
 </p>
@@ -94,6 +94,18 @@ pnpm build:win    # или: build.bat   (из админ-консоли Windows)
 В каждую сборку «зашивается» свежий `BUILD_ID`, поэтому при первом
 запуске на машине пользователя генерируется новый случайный
 Telegram-WS секрет.
+
+## macOS (экспериментально)
+
+Существует и macOS-порт (Apple Silicon, arm64) — тот же функционал
+(Telegram WS-прокси + Zapret), но с системной установкой Zapret в
+`/Library/LaunchDaemons` и кастомными «светофорами» окна. Сборка не
+нотаризуется Apple, поэтому требует ручного снятия карантина Gatekeeper.
+
+- Полная документация, **ссылка на скачивание** и список исправленных/известных
+  проблем — в **[docs/MACOS.md](./docs/MACOS.md)**.
+- Собирается в GitHub Actions по ветке `macos-port`; готовый бинарник — в
+  артефакте прогона `slipgate-macos-arm64`.
 
 ## Структура проекта
 
