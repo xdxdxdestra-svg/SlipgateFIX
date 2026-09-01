@@ -15,15 +15,18 @@ jobs:
     steps:
       - name: Resolve upstream tag
         id: ups
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           TAG=""
           for i in 1 2 3 4 5; do
-            TAG=$(curl -s -H 'User-Agent: slipgate-mac' \
+            echo "attempt $i: querying Flowseal/tg-ws-proxy latest release"
+            TAG=$(curl -sS -H 'User-Agent: slipgate-mac' ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} \
               https://api.github.com/repos/Flowseal/tg-ws-proxy/releases/latest | \
               node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);console.log(j&&j.tag_name||'')}catch(e){console.log('')}})" )
             [ -n "$TAG" ] && break
-            sleep 10
+            echo "  empty/invalid response, retrying in 15s"; sleep 15
           done
           echo "tag=${TAG:-1.6.6}" >> "$GITHUB_OUTPUT"
           echo "resolved upstream tag: ${TAG:-1.6.6}"
@@ -132,13 +135,26 @@ jobs:
           file resources/macos/tgws/TgWsProxy
 
       - name: Fetch ZapretMac payload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          URL=$(curl -s -H 'User-Agent: slipgate-mac' \
-            https://api.github.com/repos/Flowseal/zapret-mac-discord-youtube/releases/latest | \
-            node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const r=JSON.parse(d);const a=(r.assets||[]).find(x=>/ZapretMac-macOS-universal\.zip$/i.test(x.name));console.log(a?a.browser_download_url:'')})")
-          test -n "$URL"
-          curl -sL -o /tmp/zapret-mac.zip "$URL"
+          URL=""
+          for i in 1 2 3 4 5; do
+            echo "attempt $i: querying Flowseal/zapret-mac-discord-youtube latest release"
+            RESP=$(curl -sS -H 'User-Agent: slipgate-mac' ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} \
+              https://api.github.com/repos/Flowseal/zapret-mac-discord-youtube/releases/latest)
+            URL=$(printf '%s' "$RESP" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const r=JSON.parse(d);const a=(r.assets||[]).find(x=>/ZapretMac-macOS-universal\.zip$/i.test(x.name));console.log(a?a.browser_download_url:'')}catch(e){console.log('')})")
+            if [ -n "$URL" ]; then break; fi
+            echo "  empty/invalid URL (rate-limit or transient). API response head:"; printf '%s' "$RESP" | head -c 400; echo
+            sleep 15
+          done
+          if [ -z "$URL" ]; then
+            echo "::error::Failed to resolve ZapretMac-macOS-universal.zip download URL after retries (GitHub API rate limit?)."
+            exit 1
+          fi
+          echo "resolved URL: $URL"
+          curl -sSL -o /tmp/zapret-mac.zip "$URL"
           mkdir -p /tmp/zapret-mac && cd /tmp/zapret-mac && unzip -o /tmp/zapret-mac.zip
 
           # Находим каталог с файлами Zapret
