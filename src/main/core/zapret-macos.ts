@@ -128,6 +128,78 @@ function ensureDataRoot(strategyId: string): void {
   writeFileSync(path.join(DATA_ROOT, 'ipset-mode'), 'loaded\n')
 }
 
+/**
+ * Найти реальный корень payload: каталог, в котором лежат И bin/utunws, И
+ * install.sh. В зависимости от шагов сборки и версии upstream-зипа этот
+ * каталог может быть как плоским (resources/zapret), так и вложенным
+ * (resources/zapret/Payload, resources/zapret/Contents/Resources/Payload).
+ * Сначала проверяем сам base — это самый частый и желаемый случай.
+ */
+function resolvePayloadRoot(base: string): string | undefined {
+  const hasBoth = (d: string): boolean =>
+    existsSync(path.join(d, 'bin', 'utunws')) && existsSync(path.join(d, 'install.sh'))
+  if (hasBoth(base)) return base
+  for (const rel of ['Contents/Resources/Payload', 'Payload']) {
+    const p = path.join(base, rel)
+    if (existsSync(p) && hasBoth(p)) return p
+  }
+  return undefined
+}
+
+/** Рекурсивно найти файл с указанным именем под root (ограничение глубины). */
+function findFileRecursive(root: string, name: string, depth = 0): string | undefined {
+  if (depth > 4) return undefined
+  let entries: string[]
+  try {
+    entries = readdirSync(root)
+  } catch {
+    return undefined
+  }
+  for (const e of entries) {
+    const p = path.join(root, e)
+    let st
+    try {
+      st = statSync(p)
+    } catch {
+      continue
+    }
+    if (st.isFile() && e === name) return p
+    if (st.isDirectory() && !st.isSymbolicLink()) {
+      const f = findFileRecursive(p, name, depth + 1)
+      if (f) return f
+    }
+  }
+  return undefined
+}
+
+/**
+ * План Б: если copyDirRecursive из-за вложенной раскладки (Payload/) не
+ * положила install.sh и/или bin/utunws на верхний уровень dest — вытаскиваем
+ * их из глубины. Возвращает краткое описание того, что пришлось «поднять»,
+ * либо пустую строку (для лога).
+ */
+function flattenPayloadToRoot(dest: string): string {
+  const notes: string[] = []
+  const topInstall = path.join(dest, 'install.sh')
+  if (!existsSync(topInstall)) {
+    const found = findFileRecursive(dest, 'install.sh')
+    if (found) {
+      copyFileSync(found, topInstall)
+      notes.push(`install.sh pulled up from ${path.relative(dest, found)}`)
+    }
+  }
+  const topUtun = path.join(dest, 'bin', 'utunws')
+  if (!existsSync(topUtun)) {
+    const found = findFileRecursive(dest, 'utunws')
+    if (found) {
+      mkdirSync(path.dirname(topUtun), { recursive: true })
+      copyFileSync(found, topUtun)
+      notes.push(`bin/utunws pulled up from ${path.relative(dest, found)}`)
+    }
+  }
+  return notes.join('; ')
+}
+
 async function waitForEngine(timeoutMs = 15_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -323,9 +395,18 @@ function copyDirRecursive(from: string, to: string): void {
  * и запускаем тот же install.sh через runAsAdminOnMac.
  */
 export async function installZapretFromBundle(): Promise<{ strategies: number }> {
-  const src = zapretBundleDir()
+  // Находим реальный корень payload: в зависимости от шагов сборки и версии
+  // upstream-зипа каталог с bin/utunws+install.sh может оказаться вложенным
+  // (Payload/, Contents/Resources/Payload/), а не плоским. resolvePayloadRoot
+  // обрабатывает оба варианта и возвращает путь, откуда копировать.
+  const base = zapretBundleDir()
+  const src = resolvePayloadRoot(base)
 
-  if (!existsSync(path.join(src, 'bin', 'utunws')) || !existsSync(path.join(src, 'install.sh'))) {
+  if (
+    !src ||
+    !existsSync(path.join(src, 'bin', 'utunws')) ||
+    !existsSync(path.join(src, 'install.sh'))
+  ) {
     throw new Error(
       'Встроенный payload Zapret не найден в пакете Slipgate (resources/zapret). ' +
         'Попробуйте обновление через баннер выше или переустановите приложение ' +
@@ -348,6 +429,15 @@ export async function installZapretFromBundle(): Promise<{ strategies: number }>
   mkdirSync(dest, { recursive: true })
   copyDirRecursive(src, dest)
 
+  // План Б на случай экзотической раскладки: если install.sh или bin/utunws
+  // не оказались на верхнем уровне dest после copyDirRecursive (вложенный
+  // Payload/, symlink, что угодно) — вытаскиваем их из глубины. Без этого
+  // установка падает с «Скопированный payload не содержит install.sh».
+  const flattenNote = flattenPayloadToRoot(dest)
+  if (flattenNote) {
+    log('warn', `payload layout flattened: ${flattenNote}`)
+  }
+
   for (const rel of [
     'bin/utunws',
     'install.sh',
@@ -369,6 +459,8 @@ export async function installZapretFromBundle(): Promise<{ strategies: number }>
   }
 
   if (!existsSync(path.join(dest, 'install.sh'))) {
+    // Сюда попадаем только если install.sh отсутствует и в глубине dest —
+    // иначе flattenPayloadToRoot уже бы его поднял.
     throw new Error('Скопированный payload не содержит install.sh — обновите Slipgate')
   }
 
@@ -420,6 +512,70 @@ export function withZapretLock<T>(fn: () => Promise<T>): Promise<T> {
   return withLock(fn)
 }
 
+/**
+ * Собрать диагностику при неудачном старте демона: состояние data-root,
+ * выбранная стратегия, pgrep, хвост engine.log и статус launchctl. Без
+ * этого пользователь видит «utunws не запустился» без причины и непонятно,
+ * чинить DATA_ROOT, сеть или снимать карантин.
+ */
+function collectZapretDiag(): string {
+  const parts: string[] = []
+  try {
+    parts.push(`isInstalled=${isInstalled()}`)
+    parts.push(`dataRoot=${DATA_ROOT}`)
+    parts.push(
+      `dataRootLists=${existsSync(path.join(DATA_ROOT, 'lists')) ? 'yes' : 'NO'}`
+    )
+    const ss = path.join(DATA_ROOT, 'selected-strategy')
+    if (existsSync(ss)) {
+      parts.push(
+        `selected-strategy=${JSON.stringify(readFileSync(ss, 'utf8').trim())}`
+      )
+    } else {
+      parts.push('selected-strategy=MISSING')
+    }
+  } catch {
+    /* noop */
+  }
+  try {
+    const pg = spawnSync('/usr/bin/pgrep', ['-x', 'utunws'])
+    parts.push(
+      `pgrep utunws: exit=${pg.status ?? 'n/a'} (running=${pg.status === 0})`
+    )
+  } catch {
+    /* noop */
+  }
+  const logFile = path.join(INSTALL, 'engine.log')
+  if (existsSync(logFile)) {
+    try {
+      const tail = readFileSync(logFile, 'utf8').split(/\r?\n/).slice(-40).join('\n')
+      parts.push(`--- engine.log (last 40 lines) ---\n${tail}`)
+    } catch {
+      /* noop */
+    }
+  } else {
+    parts.push('engine.log: MISSING')
+  }
+  try {
+    const lc = spawnSync(
+      '/bin/launchctl',
+      ['print', 'system/io.github.flowseal.zapretmac'],
+      { encoding: 'utf8' }
+    )
+    const lcOut = (lc.stdout || lc.stderr || '')
+      .toString()
+      .split(/\r?\n/)
+      .slice(-25)
+      .join('\n')
+    if (lcOut.trim()) {
+      parts.push(`--- launchctl print (last 25 lines) ---\n${lcOut}`)
+    }
+  } catch {
+    /* noop */
+  }
+  return parts.join('\n')
+}
+
 export function startZapret(): Promise<void> {
   return withLock(() => startZapretImpl())
 }
@@ -458,9 +614,30 @@ async function startZapretImpl(): Promise<void> {
     setStatus({ state: 'running', startedAt: Date.now() })
     log('info', 'utunws is up')
   } else {
+    const diag = collectZapretDiag()
+    log('error', `utunws did not start within 15s\n${diag}`)
+    // В UI показываем самое полезное — хвост engine.log (если есть) — и отсылку
+    // к полному логу Slipgate (там же launchctl print и process state).
+    const engineLogTail = ((): string => {
+      const lf = path.join(INSTALL, 'engine.log')
+      if (!existsSync(lf)) return ''
+      try {
+        return readFileSync(lf, 'utf8')
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .slice(-15)
+          .join('\n')
+      } catch {
+        return ''
+      }
+    })()
     setStatus({
       state: 'error',
-      lastError: 'utunws не запустился за 15с. Проверьте /Library/Application Support/ZapretMac/engine.log'
+      lastError:
+        'utunws не запустился за 15с. ' +
+        (engineLogTail
+          ? `engine.log:\n${engineLogTail}\n\nПолная диагностика (launchctl + процессы) — в логе Slipgate.`
+          : 'Проверьте /Library/Application Support/ZapretMac/engine.log и лог Slipgate.')
     })
     throw new Error('utunws did not start')
   }

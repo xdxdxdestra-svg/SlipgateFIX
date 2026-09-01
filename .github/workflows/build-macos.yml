@@ -193,7 +193,12 @@ jobs:
           cp -a "$SRC/." resources/macos/zapret/
 
           chmod +x resources/macos/zapret/*.sh resources/macos/zapret/bin/utunws || true
+          # Жёсткие проверки: если payload не плоский или неполный — падаем,
+          # а не собираем .dmg с бинарём, который в приложении даст
+          # «Скопированный payload не содержит install.sh».
           test -f resources/macos/zapret/bin/utunws
+          test -f resources/macos/zapret/install.sh
+          test -f resources/macos/zapret/run.sh
           test -f resources/macos/zapret/strategies.tsv || find resources/macos/zapret -name strategies.tsv
 
       - name: Install deps
