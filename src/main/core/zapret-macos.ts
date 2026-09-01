@@ -249,15 +249,29 @@ export async function installZapretBundle(
  * распакованный/скопированный payload во временный runtime-каталог.
  */
 async function runInstallFlow(dest: string, firstInstall: boolean): Promise<void> {
+  // run.sh (демон LaunchDaemon) ЖЁСТКО требует $DATA_ROOT/lists (все 8 файлов —
+  // иначе exit 1) + selected-strategy + ipset-mode ПЕРЕД стартом, иначе utun50
+  // никогда не появляется и install.sh пишет «utunws did not stay running» →
+  // exit 1. Поэтому data-root создаём БЕЗУСЛОВНО, до любой ветки: неудачная
+  // первая попытка могла уже оставить plist+bin (isInstalled()==true) БЕЗ lists,
+  // и следующий клик уйдёт в ветку «обновление», которая сама lists не создаёт.
+  ensureDataRoot('general-simple-fake')
+
   if (firstInstall) {
     // Первая установка: install.sh ставит LaunchDaemon и запускает zapret.
-    const script = `set -eu\n/bin/sh ${sq(`${dest}/install.sh`)} ${sq(dest)} ${sq(DATA_ROOT)}\n`
+    const script =
+      `set -eu\n` +
+      `xattr -dr com.apple.quarantine ${sq(dest)} 2>/dev/null || true\n` +
+      `/bin/sh ${sq(`${dest}/install.sh`)} ${sq(dest)} ${sq(DATA_ROOT)}\n` +
+      `xattr -dr com.apple.quarantine "/Library/Application Support/ZapretMac" 2>/dev/null || true\n`
     const r = await runAsAdminOnMac(script)
     if (r.code !== 0) {
       throw new Error(installErrorText('установить', r))
     }
   } else {
-    // Обновление: пересинхронизируем payload на месте.
+    // Обновление: пересинхронизируем payload на месте и (пере)запустим демон,
+    // чтобы установка гарантированно приводила к работающему сервису — в т.ч.
+    // после неудачной попытки, когда демон остановлен (install.sh вызвал stop.sh).
     const chmodTargets = [
       'install.sh',
       'run.sh',
@@ -276,6 +290,7 @@ async function runInstallFlow(dest: string, firstInstall: boolean): Promise<void
       `/usr/bin/rsync -a --delete ${sq(`${dest}/`)} ${sq(`${INSTALL}/`)}`,
       `/usr/sbin/chown -R root:wheel ${sq(INSTALL)}`,
       ...(chmodTargets ? [`/bin/chmod 755 ${chmodTargets}`] : []),
+      `/bin/sh ${sq(`${INSTALL}/restart.sh`)}`,
       ''
     ].join('\n')
     const r = await runAsAdminOnMac(script)
