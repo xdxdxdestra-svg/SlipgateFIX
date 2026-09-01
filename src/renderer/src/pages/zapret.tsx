@@ -11,9 +11,12 @@ import {
   zapretCheckUpdate,
   zapretInstallUpdate,
   zapretDismissUpdate,
+  zapretIsInstalled,
+  zapretInstallBundled,
   zapretRunStrategyTest,
   type ZapretUpdateInfo
 } from '@renderer/utils/ipc'
+import { platform } from '@renderer/utils/init'
 import { useAppConfig } from '@renderer/hooks/use-app-config'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
@@ -39,6 +42,11 @@ const Zapret: React.FC = () => {
   const [updateInfo, setUpdateInfo] = useState<ZapretUpdateInfo | null>(null)
   const [installing, setInstalling] = useState(false)
   const installingRef = useRef(false)
+
+  // ---- Статус установки Zapret в систему (macOS: /Library/LaunchDaemons)
+  const isMac = platform === 'darwin'
+  const [installed, setInstalled] = useState<boolean | null>(null)
+  const [installingBundled, setInstallingBundled] = useState(false)
 
   // ---- Strategy test
   const testProgress = useZapretTestStore((s) => s.progress)
@@ -74,6 +82,11 @@ const Zapret: React.FC = () => {
     // limit, offline, etc.) — surfacing a network error here would be
     // noise for users who never asked to check.
     zapretCheckUpdate(false).then(setUpdateInfo).catch(() => setUpdateInfo(null))
+    // На macOS запрашиваем, установлен ли Zapret в систему — чтобы показать
+    // кнопку установки из встроенного payload при свежей установке.
+    if (isMac) {
+      zapretIsInstalled().then(setInstalled).catch(() => setInstalled(null))
+    }
 
     const t = setTimeout(() => {
       if (autoTestStartedRef.current) return
@@ -90,7 +103,16 @@ const Zapret: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const showBanner = !!updateInfo && updateInfo.hasUpdate && !updateInfo.dismissed && !!updateInfo.assetUrl
+  // На свежей macOS-установке Zapret ещё не стоит в системе — в этом случае
+  // показываем отдельную кнопку установки из встроенного payload (она важнее
+  // баннера обновления, который в этом сценарии может и не появиться).
+  const showBundledInstall = isMac && installed === false
+  const showBanner =
+    !!updateInfo &&
+    updateInfo.hasUpdate &&
+    !updateInfo.dismissed &&
+    !!updateInfo.assetUrl &&
+    !showBundledInstall
 
   const installUpdate = async (): Promise<void> => {
     if (installingRef.current || !updateInfo?.assetUrl) return
@@ -136,6 +158,45 @@ const Zapret: React.FC = () => {
     setUpdateInfo({ ...updateInfo, dismissed: true })
   }
 
+  // Установка Zapret из встроенного payload приложения (resources/zapret),
+  // без скачивания. Показывается на macOS при свежей установке.
+  const installBundled = async (): Promise<void> => {
+    if (installingRef.current) return
+    installingRef.current = true
+    setInstallingBundled(true)
+    const tId = toast.loading('Устанавливаем Zapret из встроенного пакета…', {
+      description: `v${BUNDLED_ZAPRET_VERSION}`
+    })
+    try {
+      const res = await zapretInstallBundled()
+      toast.success('Zapret установлен', {
+        id: tId,
+        description: `Стратегий: ${res.strategies}`,
+        style: POWER_ON_BANNER_STYLE
+      })
+      setInstalled(true)
+      refreshStrategies()
+      // Запоминаем установленную версию в конфиге (для карточки версии).
+      // patchAppConfig делает deep-merge, поэтому остальные поля zapret
+      // (activeStrategy, enabled, …) сохранятся. Поле zapret в типе —
+      // полный ZapretConfig (enabled обязателен), поэтому раскрываем
+      // существующий zapret с fallback'ом на { enabled: false }.
+      await patchAppConfig({
+        zapret: { ...(zapret ?? { enabled: false }), installedVersion: BUNDLED_ZAPRET_VERSION }
+      }).catch(() => void 0)
+      // Пере-проверяем обновление, чтобы при наличии более новой версии
+      // показать баннер поверх свежеустановленной.
+      const fresh = await zapretCheckUpdate(true).catch(() => null)
+      setUpdateInfo(fresh)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast.error('Не удалось установить Zapret', { id: tId, description: msg })
+    } finally {
+      setInstallingBundled(false)
+      installingRef.current = false
+    }
+  }
+
   const pickStrategy = async (file: string): Promise<void> => {
     // Defensive: if the user manages to click a disabled strategy via
     // keyboard or a stale render, drop the request silently.
@@ -159,6 +220,39 @@ const Zapret: React.FC = () => {
   return (
     <BasePage title="Zapret">
       <div className="px-4 pb-6 space-y-4">
+        {showBundledInstall && (
+          <div className={cn(
+            'relative flex items-center gap-3 rounded-lg border border-stroke bg-card/70 backdrop-blur-xl px-4 py-3 transition',
+            installingBundled && 'pointer-events-none opacity-80'
+          )}>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
+              {installingBundled
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <Sparkles className="h-4 w-4" />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-foreground">
+                {installingBundled
+                  ? 'Устанавливаем Zapret…'
+                  : 'Zapret не установлен'}
+              </div>
+              <div className="text-xs text-muted-foreground truncate">
+                {installingBundled
+                  ? 'Запуск install.sh от имени администратора…'
+                  : `Установите из встроенного пакета (v${BUNDLED_ZAPRET_VERSION}). Понадобится пароль администратора.`}
+              </div>
+            </div>
+            {!installingBundled && (
+              <div className="flex shrink-0 items-center gap-2">
+                <Button size="sm" onClick={() => { void installBundled() }}>
+                  <Download className="h-3.5 w-3.5" />
+                  Установить Zapret
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+
         {showBanner && updateInfo && (
           <div className={cn(
             'relative flex items-center gap-3 rounded-lg border border-stroke bg-card/70 backdrop-blur-xl px-4 py-3 transition',
@@ -290,10 +384,9 @@ const Zapret: React.FC = () => {
         <CardContent className="space-y-2">
           {strategies.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              Сборка Zapret не найдена. Скопируйте содержимое{' '}
-              <code className="text-xs">Flowseal/zapret-discord-youtube</code> в{' '}
-              <code className="text-xs">%APPDATA%\slipgate\runtime\zapret</code> или встроенную папку{' '}
-              <code className="text-xs">resources\zapret</code>.
+              {isMac
+                ? 'Сборка Zapret не найдена во встроенном пакете. Переустановите приложение из официального релиза.'
+                : 'Сборка Zapret не найдена. Скопируйте содержимое Flowseal/zapret-discord-youtube в %APPDATA%\\slipgate\\runtime\\zapret или встроенную папку resources\\zapret.'}
             </p>
           )}
           {strategies.map((s) => {

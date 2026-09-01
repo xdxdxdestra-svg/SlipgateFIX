@@ -14,7 +14,9 @@ import {
   stopZapret,
   restartZapret,
   listStrategies,
-  installZapretBundle
+  installZapretBundle,
+  installZapretFromBundle,
+  isZapretInstalled
 } from '../core/zapret'
 import {
   checkZapretUpdate,
@@ -202,6 +204,9 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('zapret:installBundle', h((bytes) =>
     installZapretBundle(bytes as Uint8Array)
   ))
+  // Установка из встроенного payload (macOS): не требует скачивания zip.
+  ipcMain.handle('zapret:installBundled', h(() => installZapretFromBundle()))
+  ipcMain.handle('zapret:isInstalled', h(() => isZapretInstalled()))
   ipcMain.handle('zapret:checkUpdate', h((force) => checkZapretUpdate(Boolean(force))))
   ipcMain.handle('zapret:installUpdate', h((url, expectedVersion) =>
     installZapretUpdate(url as string, expectedVersion as string | undefined)

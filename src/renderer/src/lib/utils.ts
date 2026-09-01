@@ -25,4 +25,9 @@ export const POWER_OFF_BANNER_STYLE: CSSProperties = {
 }
 
 export const BUNDLED_TGWS_VERSION = '1.6.6'
-export const BUNDLED_ZAPRET_VERSION = '1.9.8c'
+// Версия встроенного Zapret отличается по платформам: на macOS поставляется
+// нативный payload Flowseal/zapret-mac-discord-youtube (1.1.2), на Windows —
+// winws-сборка (1.9.8c). Используем платформозависимое значение, чтобы
+// карточка версии показывала корректную цифру.
+import { platform } from '@renderer/utils/init'
+export const BUNDLED_ZAPRET_VERSION = platform === 'darwin' ? '1.1.2' : '1.9.8c'

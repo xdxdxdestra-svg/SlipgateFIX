@@ -244,10 +244,14 @@ export async function createWindow(appConfig?: AppConfig): Promise<void> {
     show: false,
     // Slipgate ships with a custom in-app titlebar (see WindowControls), so
     // the native OS frame is always disabled — there is no user-facing
-    // option to re-enable it.
+    // option to re-enable it. Keep the window fully frameless on every
+    // platform (incl. macOS): the custom WindowControls in App.tsx/base-page
+    // draw the traffic-light/min/max/close buttons. Removing any native
+    // title-bar style is essential — `titleBarStyle: 'hidden'` would make
+    // macOS render the *native* traffic lights on top of our custom ones,
+    // duplicating the window controls.
     frame: false,
     fullscreenable: false,
-    titleBarStyle: 'hidden',
     autoHideMenuBar: true,
     skipTaskbar: initialSkipTaskbar,
     ...(process.platform === 'linux' ? { icon } : {}),

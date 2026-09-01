@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync, chmodSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync, chmodSync, readdirSync, statSync } from 'fs'
 import path from 'path'
 import { app, BrowserWindow } from 'electron'
 import { spawnSync } from 'child_process'
@@ -225,7 +225,30 @@ export async function installZapretBundle(
   }
 
   const firstInstall = !isInstalled()
+  await runInstallFlow(dest, firstInstall)
 
+  if (!isInstalled()) {
+    throw new Error(
+      'Установка не подтвердилась: нет /Library/Application Support/ZapretMac/bin/utunws или LaunchDaemon-плиста. ' +
+        'Проверьте пароль администратора и отсутствие запрета в «Системные настройки → Конфиденциальность».'
+    )
+  }
+
+  const list = listStrategies()
+  log(
+    'info',
+    `ZapretMac bundle ${firstInstall ? 'installed' : 'updated'}: ${written} files, ${list.length} strategies`
+  )
+  return { strategies: list.length }
+}
+
+/**
+ * Собственно установка/обновление в /Library/Application Support/ZapretMac.
+ * Общий код для установки из скачанного zip (`installZapretBundle`) и из
+ * встроенного payload приложения (`installZapretFromBundle`). `dest` — уже
+ * распакованный/скопированный payload во временный runtime-каталог.
+ */
+async function runInstallFlow(dest: string, firstInstall: boolean): Promise<void> {
   if (firstInstall) {
     // Первая установка: install.sh ставит LaunchDaemon и запускает zapret.
     const script = `set -eu\n/bin/sh ${sq(`${dest}/install.sh`)} ${sq(dest)} ${sq(DATA_ROOT)}\n`
@@ -260,6 +283,82 @@ export async function installZapretBundle(
       throw new Error(installErrorText('обновить', r))
     }
   }
+}
+
+/** Рекурсивное копирование каталога (встроенный payload → runtime-каталог). */
+function copyDirRecursive(from: string, to: string): void {
+  for (const entry of readdirSync(from)) {
+    const srcPath = path.join(from, entry)
+    const destPath = path.join(to, entry)
+    const st = statSync(srcPath)
+    if (st.isDirectory()) {
+      mkdirSync(destPath, { recursive: true })
+      copyDirRecursive(srcPath, destPath)
+    } else {
+      copyFileSync(srcPath, destPath)
+    }
+  }
+}
+
+/**
+ * Установить Zapret из встроенного payload, который уже лежит внутри .app
+ * (resources/zapret). Используется на свежей установке macOS, когда баннер
+ * обновления не появляется (версия в поставке совпадает с последней или нет
+ * сети). Не требует скачивания — просто копируем payload в runtime-каталог
+ * и запускаем тот же install.sh через runAsAdminOnMac.
+ */
+export async function installZapretFromBundle(): Promise<{ strategies: number }> {
+  const src = zapretBundleDir()
+
+  if (!existsSync(path.join(src, 'bin', 'utunws')) || !existsSync(path.join(src, 'install.sh'))) {
+    throw new Error(
+      'Встроенный payload Zapret не найден в пакете Slipgate (resources/zapret). ' +
+        'Попробуйте обновление через баннер выше или переустановите приложение ' +
+        'из официального релиза.'
+    )
+  }
+
+  if (status.state === 'running' || status.state === 'starting') {
+    try {
+      await stopZapret()
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  const dest = zapretRuntimeDir()
+  if (existsSync(dest)) {
+    rmSync(dest, { recursive: true, force: true })
+  }
+  mkdirSync(dest, { recursive: true })
+  copyDirRecursive(src, dest)
+
+  for (const rel of [
+    'bin/utunws',
+    'install.sh',
+    'run.sh',
+    'stop.sh',
+    'restart.sh',
+    'watchdog.sh',
+    'test-strategies.sh',
+    'update-app.sh'
+  ]) {
+    const p = path.join(dest, rel)
+    if (existsSync(p)) {
+      try {
+        chmodSync(p, 0o755)
+      } catch {
+        /* noop */
+      }
+    }
+  }
+
+  if (!existsSync(path.join(dest, 'install.sh'))) {
+    throw new Error('Скопированный payload не содержит install.sh — обновите Slipgate')
+  }
+
+  const firstInstall = !isInstalled()
+  await runInstallFlow(dest, firstInstall)
 
   if (!isInstalled()) {
     throw new Error(
@@ -269,11 +368,13 @@ export async function installZapretBundle(
   }
 
   const list = listStrategies()
-  log(
-    'info',
-    `ZapretMac bundle ${firstInstall ? 'installed' : 'updated'}: ${written} files, ${list.length} strategies`
-  )
+  log('info', `ZapretMac installed from bundled resources: ${list.length} strategies`)
   return { strategies: list.length }
+}
+
+/** Установлен ли Zapret в систему (LaunchDaemon + bin/utunws). */
+export function isZapretInstalled(): boolean {
+  return isInstalled()
 }
 
 /** Надёжное одинарное кавычение для путей внутри shell-скрипта. */

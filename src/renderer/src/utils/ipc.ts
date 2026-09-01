@@ -65,6 +65,9 @@ export const zapretStop = (): Promise<void> => invoke('zapret:stop')
 export const zapretRestart = (): Promise<void> => invoke('zapret:restart')
 export const zapretInstallBundle = (bytes: Uint8Array): Promise<{ strategies: number }> =>
   invoke('zapret:installBundle', bytes)
+export const zapretInstallBundled = (): Promise<{ strategies: number }> =>
+  invoke('zapret:installBundled')
+export const zapretIsInstalled = (): Promise<boolean> => invoke('zapret:isInstalled')
 
 export interface ZapretUpdateInfo {
   installed?: string
