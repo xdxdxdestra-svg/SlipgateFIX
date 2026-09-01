@@ -18,7 +18,7 @@ import {
   type ZapretUpdateInfo, type TgwsUpdateInfo
 } from '@renderer/utils/ipc'
 import { Button } from '@renderer/components/ui/button'
-import { POWER_ON_BANNER_STYLE, BUNDLED_TGWS_VERSION, BUNDLED_ZAPRET_VERSION } from '@renderer/lib/utils'
+import { POWER_ON_BANNER_STYLE, BUNDLED_TGWS_VERSION, BUNDLED_ZAPRET_VERSION, isDeniedError, VPN_HINT_MESSAGE } from '@renderer/lib/utils'
 import { RotateCw, Sparkles, X } from 'lucide-react'
 import Power from '@renderer/assets/on_icon.svg'
 import Pause from '@renderer/assets/pause_icon.svg'
@@ -173,7 +173,7 @@ const PowerToggle: React.FC<PowerToggleProps> = ({
 
       {status.lastError && (
         <div className="mt-2 text-[11px] text-stroke-power-off text-center max-w-xs truncate">
-          {status.lastError}
+          {isDeniedError(status.lastError) ? VPN_HINT_MESSAGE : status.lastError}
         </div>
       )}
     </div>

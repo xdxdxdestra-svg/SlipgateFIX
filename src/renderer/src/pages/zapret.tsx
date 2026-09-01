@@ -21,7 +21,7 @@ import { useAppConfig } from '@renderer/hooks/use-app-config'
 import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
 import { Button } from '@renderer/components/ui/button'
 import ZapretIcon from '@renderer/components/zapret-icon'
-import { cn, BUNDLED_ZAPRET_VERSION, POWER_ON_BANNER_STYLE, POWER_OFF_BANNER_STYLE } from '@renderer/lib/utils'
+import { cn, BUNDLED_ZAPRET_VERSION, POWER_ON_BANNER_STYLE, POWER_OFF_BANNER_STYLE, isDeniedError, VPN_HINT_MESSAGE } from '@renderer/lib/utils'
 import BasePage from '@renderer/components/base/base-page'
 import SwitcherCard from '@renderer/components/switcher-card'
 import ZapretIpListCard from '@renderer/components/zapret-iplist-card'
@@ -463,18 +463,26 @@ const Zapret: React.FC = () => {
         </CardContent>
       </Card>
 
-      {status.lastError && (
-        <Card className="border" style={POWER_OFF_BANNER_STYLE}>
-          <CardContent className="pt-4 space-y-3">
-            <p className="text-sm">{status.lastError}</p>
-            {isMac && status.state === 'error' && (
-              <Button size="sm" variant="outline" onClick={() => { void retryZapret() }}>
-                Попробовать еще раз
-              </Button>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {status.lastError && (() => {
+        const denied = isDeniedError(status.lastError)
+        const showRetry = denied || (isMac && status.state === 'error')
+        return (
+          <Card className="border" style={POWER_OFF_BANNER_STYLE}>
+            <CardContent className="pt-4 space-y-3">
+              <p className="text-sm">
+                {denied ? VPN_HINT_MESSAGE : status.lastError}
+              </p>
+              {showRetry && (
+                <div className="flex justify-start">
+                  <Button size="sm" variant="outline" onClick={() => { void retryZapret() }}>
+                    Попробовать еще раз
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )
+      })()}
       </div>
     </BasePage>
   )

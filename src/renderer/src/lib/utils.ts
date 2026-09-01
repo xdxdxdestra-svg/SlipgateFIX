@@ -31,3 +31,27 @@ export const BUNDLED_TGWS_VERSION = '1.6.6'
 // карточка версии показывала корректную цифру.
 import { platform } from '@renderer/utils/init'
 export const BUNDLED_ZAPRET_VERSION = platform === 'darwin' ? '1.1.2' : '1.9.8c'
+
+// Текст подсказки, который показываем при «ошибках с запретом» (отказ в доступе /
+// permission denied / EPERM / EACCES и т.п.) вместо сырой ошибки — просим
+// пользователя отключить VPN и повторить попытку.
+export const VPN_HINT_MESSAGE = 'Попробуйте отключить VPN и попробуйте еще раз'
+
+// «Ошибки с запретом» — отказ в доступе / permission denied / EPERM / EACCES и т.п.
+// Используется, чтобы на таких ошибках показывать VPN_HINT_MESSAGE и кнопку
+// повтора вместо сырого сообщения.
+export function isDeniedError(msg?: string): boolean {
+  if (!msg) return false
+  const m = msg.toLowerCase()
+  return (
+    m.includes('запрещ') ||
+    m.includes('отказано') ||
+    m.includes('denied') ||
+    m.includes('permission') ||
+    m.includes('eperm') ||
+    m.includes('eacces') ||
+    m.includes('access is denied') ||
+    m.includes('не хватает прав') ||
+    m.includes('недостаточно прав')
+  )
+}

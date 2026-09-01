@@ -17,7 +17,7 @@ import TelegramIcon from '@renderer/components/telegram-icon'
 import ReloadTgwsIcon from '@renderer/components/reload-tgws-icon'
 import BasePage from '@renderer/components/base/base-page'
 import SwitcherCard from '@renderer/components/switcher-card'
-import { cn, POWER_ON_BANNER_STYLE, BUNDLED_TGWS_VERSION } from '@renderer/lib/utils'
+import { cn, POWER_ON_BANNER_STYLE, BUNDLED_TGWS_VERSION, isDeniedError, VPN_HINT_MESSAGE } from '@renderer/lib/utils'
 
 // Re-export the shared banner style under the legacy name so the
 // existing toast.success({ style: POWER_ON_TOAST_STYLE }) call sites
@@ -258,13 +258,25 @@ const TelegramPage: React.FC = () => {
         </CardContent>
       </Card>
 
-      {status.lastError && (
-        <Card className="border-red-500/50">
-          <CardContent className="pt-4">
-            <p className="text-sm text-red-500">{status.lastError}</p>
-          </CardContent>
-        </Card>
-      )}
+      {status.lastError && (() => {
+        const denied = isDeniedError(status.lastError)
+        return (
+          <Card className="border-red-500/50">
+            <CardContent className="pt-4 space-y-3">
+              <p className="text-sm text-red-500">
+                {denied ? VPN_HINT_MESSAGE : status.lastError}
+              </p>
+              {denied && (
+                <div className="flex justify-start">
+                  <Button size="sm" variant="outline" onClick={() => { void tgwsStart() }}>
+                    Попробовать еще раз
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )
+      })()}
       </div>
     </BasePage>
   )

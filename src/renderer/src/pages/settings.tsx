@@ -87,6 +87,7 @@ const Settings: React.FC = () => {
         </CardContent>
       </Card>
 
+      {!isMac && (
       <Card>
         <CardHeader>
           <CardTitle>Интерфейс</CardTitle>
@@ -120,12 +121,14 @@ const Settings: React.FC = () => {
           </div>
         </CardContent>
       </Card>
+      )}
 
       <Card>
         <CardHeader>
           <CardTitle>Дополнительно</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          {!isMac && (
           <div className="flex items-center justify-between">
             <Label className="text-sm">Отключить аппаратное ускорение (нужен перезапуск)</Label>
             <Switch
@@ -133,6 +136,7 @@ const Settings: React.FC = () => {
               onCheckedChange={(v) => patchAppConfig({ disableGPU: v })}
             />
           </div>
+          )}
           <Button size="sm" variant="outline" onClick={() => appRelaunch()}>
             Перезапустить приложение
           </Button>

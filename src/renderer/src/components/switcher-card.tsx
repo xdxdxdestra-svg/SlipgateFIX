@@ -1,6 +1,6 @@
 import React from 'react'
 import { Switch } from '@renderer/components/ui/switch'
-import { cn } from '@renderer/lib/utils'
+import { cn, isDeniedError, VPN_HINT_MESSAGE } from '@renderer/lib/utils'
 import { Loader2 } from 'lucide-react'
 
 interface SwitcherCardProps {
@@ -137,7 +137,7 @@ const SwitcherCard: React.FC<SwitcherCardProps> = ({
 
       {errored && status.lastError && (
         <div className="text-[11px] text-white/90 bg-black/20 rounded-md px-2 py-1.5 truncate">
-          {status.lastError}
+          {isDeniedError(status.lastError) ? VPN_HINT_MESSAGE : status.lastError}
         </div>
       )}
     </div>
