@@ -10,7 +10,12 @@ import { stopTgws, getTgwsStatus } from './tgws'
 const IS_MAC = process.platform === 'darwin'
 const BIN_NAME = IS_MAC ? 'TgWsProxy' : 'TgWsProxy_windows.exe'
 
-const REPO = 'xdxdxdestra-svg/slipgate-tgws-cli'
+// Windows: xdxdxdestra-svg/slipgate-tgws-cli (публикует TgWsProxy_windows.exe).
+// macOS: выделенное зеркало xdxdxdestra-svg/slipgate-tgws-cli-macos, которое
+// собирает и выкладывает «голый» CLI-бинарник TgWsProxy (arm64) — Flowseal
+// для macOS поставляет только TgWsProxy_macos_universal.dmg с .app, непригодный
+// для запуска из приложения.
+const REPO = IS_MAC ? 'xdxdxdestra-svg/slipgate-tgws-cli-macos' : 'xdxdxdestra-svg/slipgate-tgws-cli'
 const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent': 'Slipgate-Updater',
@@ -137,10 +142,11 @@ export async function checkTgwsUpdate(force = false): Promise<TgwsUpdateInfo> {
 
   // Windows: строго 64-bit "TgWsProxy_windows.exe" (в релизе есть и Win-7
   // 32-bit сборка, которую мы не хотим ставить).
-  // macOS: нужен «голый» CLI-бинарник без расширения. В релизах Flowseal
-  // macOS поставляется ТОЛЬКО как TgWsProxy_macos_universal.dmg — это образ
-  // с .app, его нельзя записывать поверх бинарника. Поэтому любые .dmg/.zip/
-  // .pkg отсекаем: лучше честно показать «обновлений нет», чем сломать запуск.
+  // macOS: «голый» CLI-бинарник без расширения (TgWsProxy). Его публикует
+  // выделенное зеркало slipgate-tgws-cli-macos — Flowseal для macOS кладёт
+  // только TgWsProxy_macos_universal.dmg с .app, непригодный для запуска из
+  // приложения. Любые .dmg/.zip/.pkg отсекаем на всякий случай: лучше честно
+  // показать «обновлений нет», чем сломать запуск.
   const assets = release.assets ?? []
   const winAsset = IS_MAC
     ? (assets.find((a) => /^TgWsProxy/i.test(a.name) && isMacCliBinary(a.name)) ??

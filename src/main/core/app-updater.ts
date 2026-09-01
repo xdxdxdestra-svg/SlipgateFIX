@@ -247,102 +247,78 @@ export async function installAppUpdate(
     }
   }
 
-  // Spawn detached so the installer survives our app.quit().
-  const child = spawn(installerPath, ['/S', '--updated'], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true
-  })
-  child.on('error', (e) => console.error('[app-updater] installer spawn error:', e))
-  const installerPid = child.pid
-  child.unref()
-
-  // Re-launch watcher. With `oneClick: false` (assisted installer) the
-  // built-in `--updated` relaunch flag is unreliable when the installer
-  // runs elevated, so we maintain our own watcher: poll the installer
-  // PID, wait for Slipgate.exe to settle, then start it.
-  if (installerPid) {
-    try {
-      const exePath = process.execPath
-      const exeDir = path.dirname(exePath)
-      const ts = Date.now()
-      const logPath = path.join(dir, `Slipgate-relaunch-${ts}.log`)
-      const watcherScript = [
-        "$ErrorActionPreference = 'SilentlyContinue'",
-        `$installerPid = ${installerPid}`,
-        `$exe = '${exePath.replace(/'/g, "''")}'`,
-        `$exeDir = '${exeDir.replace(/'/g, "''")}'`,
-        `$logPath = '${logPath.replace(/'/g, "''")}'`,
-        // Diagnostic log — survives even if the relaunch fails so we
-        // can ask users to attach %TEMP%\Slipgate-relaunch-*.log when
-        // a future bug report comes in.
-        'function Log($m) {',
-        '  try { Add-Content -LiteralPath $logPath -Value "$([DateTime]::Now.ToString(\'HH:mm:ss.fff\')) $m" } catch {}',
-        '}',
-        'Log \"watcher started, installerPid=$installerPid exe=$exe\"',
-        // 1) Wait for the installer to finish (up to 5 min — silent NSIS
-        //    upgrades take 5–15s but slow disks / AV may stretch it).
-        '$deadline = (Get-Date).AddMinutes(5)',
-        'while ((Get-Date) -lt $deadline) {',
-        '  if (-not (Get-Process -Id $installerPid -ErrorAction SilentlyContinue)) { Log \"installer exited\"; break }',
-        '  Start-Sleep -Milliseconds 500',
-        '}',
-        // 2) Defender often holds the freshly-written Slipgate.exe for a
-        //    few seconds for an on-write scan; 1s wasn't always enough.
-        'Start-Sleep -Seconds 3',
-        // 3) Wait until the new exe actually exists on disk.
-        '$filePoll = (Get-Date).AddSeconds(60)',
-        'while ((Get-Date) -lt $filePoll -and -not (Test-Path -LiteralPath $exe)) {',
-        '  Start-Sleep -Milliseconds 500',
-        '}',
-        'if (-not (Test-Path -LiteralPath $exe)) { Log \"exe missing at $exe — giving up\"; exit 1 }',
-        // 4) Try to launch via Start-Process first (preferred — surfaces
-        //    in the user's interactive session). If that throws, fall
-        //    back to the .NET Process API which goes through CreateProcess
-        //    directly.
-        'try {',
-        '  Start-Process -FilePath $exe -WorkingDirectory $exeDir',
-        '  Log \"Start-Process OK\"',
-        '} catch {',
-        '  Log \"Start-Process failed: $_ — trying .NET fallback\"',
-        '  try {',
-        '    [System.Diagnostics.Process]::Start($exe) | Out-Null',
-        '    Log \"Process.Start OK\"',
-        '  } catch {',
-        '    Log \"all relaunch attempts failed: $_\"',
-        '  }',
-        '}'
-      ].join('\n')
-      const watcherPath = path.join(dir, `Slipgate-relaunch-${ts}.ps1`)
-      // Prepend BOM so PowerShell reads the script as UTF-8 even on
-      // legacy systems where the OEM code page would otherwise mangle
-      // non-ASCII characters in install paths.
-      writeFileSync(watcherPath, '\ufeff' + watcherScript, 'utf8')
-      const watcher = spawn(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-WindowStyle',
-          'Hidden',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-File',
-          watcherPath
-        ],
-        {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true
-        }
-      )
-      watcher.on('error', (e) => console.error('[app-updater] relaunch watcher spawn error:', e))
-      watcher.unref()
-    } catch (e) {
-      // Watcher is best-effort — if it fails the user just has to
-      // double-click the desktop shortcut after install. Don't block
-      // the upgrade itself on this.
-      console.warn('[app-updater] relaunch watcher setup failed:', e)
-    }
+  // The NSIS installer is a perMachine (Program Files) build whose manifest
+  // requests `requireAdministrator`. A plain Node child_process.spawn goes
+  // through CreateProcess, which CANNOT launch an admin-required executable —
+  // Windows returns ERROR_ELEVATION_REQUIRED (740) and the installer exits
+  // silently, so the app quits with nothing installed. The only correct path
+  // is ShellExecute via `Start-Process -Verb RunAs`, which triggers the UAC
+  // consent prompt. We wrap install + relaunch in one detached, hidden
+  // PowerShell so it survives app.quit() and brings the new build back.
+  try {
+    const ts = Date.now()
+    const logPath = path.join(dir, `Slipgate-relaunch-${ts}.log`)
+    const script = [
+      "$ErrorActionPreference = 'SilentlyContinue'",
+      `$installer = '${installerPath.replace(/'/g, "''")}'`,
+      `$exe = '${process.execPath.replace(/'/g, "''")}'`,
+      `$exeDir = '${path.dirname(process.execPath).replace(/'/g, "''")}'`,
+      `$logPath = '${logPath.replace(/'/g, "''")}'`,
+      // Diagnostic log — survives even if the relaunch fails so we can ask
+      // users to attach %TEMP%\Slipgate-relaunch-*.log in a future report.
+      'function Log($m) {',
+      '  try { Add-Content -LiteralPath $logPath -Value "$([DateTime]::Now.ToString(\'HH:mm:ss.fff\')) $m" } catch {}',
+      '}',
+      'Log "installer=$installer exe=$exe"',
+      // 1) Elevate + run silently; -Wait blocks until the (elevated)
+      //    installer returns so we don't relaunch the old exe prematurely.
+      'try {',
+      '  Log "requesting elevation for installer"',
+      "  Start-Process -FilePath $installer -ArgumentList '/S','--updated' -Verb RunAs -Wait",
+      '  Log "installer returned"',
+      '} catch {',
+      '  Log "installer elevate/run failed: $_"',
+      '}',
+      // 2) Defender often holds the freshly-written Slipgate.exe for a few
+      //    seconds for an on-write scan; 3s wasn't always enough.
+      'Start-Sleep -Seconds 3',
+      // 3) Wait until the new exe actually exists on disk (up to 60s).
+      '$filePoll = (Get-Date).AddSeconds(60)',
+      'while ((Get-Date) -lt $filePoll -and -not (Test-Path -LiteralPath $exe)) {',
+      '  Start-Sleep -Milliseconds 500',
+      '}',
+      'if (-not (Test-Path -LiteralPath $exe)) { Log "exe missing at $exe — giving up"; exit 1 }',
+      // 4) Relaunch the (new) app in the user's interactive session.
+      'try {',
+      '  Start-Process -FilePath $exe -WorkingDirectory $exeDir',
+      '  Log "Start-Process OK"',
+      '} catch {',
+      '  Log "Start-Process failed: $_ — trying .NET fallback"',
+      '  try {',
+      '    [System.Diagnostics.Process]::Start($exe) | Out-Null',
+      '    Log "Process.Start OK"',
+      '  } catch {',
+      '    Log "all relaunch attempts failed: $_"',
+      '  }',
+      '}'
+    ].join('\n')
+    const watcherPath = path.join(dir, `Slipgate-relaunch-${ts}.ps1`)
+    // Prepend BOM so PowerShell reads the script as UTF-8 even on legacy
+    // systems where the OEM code page would otherwise mangle non-ASCII
+    // install paths.
+    writeFileSync(watcherPath, '\ufeff' + script, 'utf8')
+    const watcher = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', watcherPath],
+      { detached: true, stdio: 'ignore', windowsHide: true }
+    )
+    watcher.on('error', (e) => console.error('[app-updater] updater script spawn error:', e))
+    watcher.unref()
+  } catch (e) {
+    // Watcher is best-effort — if it fails the user just has to
+    // double-click the desktop shortcut after install. Don't block the
+    // upgrade itself on this.
+    console.warn('[app-updater] updater script setup failed:', e)
   }
 
   // Give NSIS a beat to acquire the install lock, then quit. If we quit

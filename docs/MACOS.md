@@ -94,6 +94,28 @@ Windows-версии (локальный Telegram WS-прокси + обход D
 
 ---
 
+## Авто-обновление (macOS)
+
+Обновления двух сервисов приходят из разных источников:
+
+- **TgWsProxy (Telegram-прокси).** На macOS бинарник качается из выделенного
+  зеркала **[slipgate-tgws-cli-macos](https://github.com/xdxdxdestra-svg/slipgate-tgws-cli-macos)**,
+  которое собирает «голый» CLI `TgWsProxy` (arm64) из исходников
+  Flowseal/tg-ws-proxy и выкладывает под тем же тегом, что и апстрим. Flowseal
+  для macOS публикует только `TgWsProxy_macos_universal.dmg` (GUI `.app`),
+  непригодный для запуска из приложения — поэтому нужно отдельное зеркало.
+  Зеркало пересобирается в CI при каждом новом релизе tg-ws-proxy (cron +
+  ручной запуск), см. `scripts/mirror-tgws-cli-macos/`.
+- **Zapret.** Качается напрямую из
+  **[Flowseal/zapret-mac-discord-youtube](https://github.com/Flowseal/zapret-mac-discord-youtube)**
+  (ассет `ZapretMac-macOS-universal.zip`) — отдельное зеркало не нужно,
+  апстрим уже отдаёт готовый универсальный архив.
+
+Скачанный TgWsProxy переподписывается ad-hoc (без hardened runtime) перед
+запуском, поэтому Gatekeeper его пропускает.
+
+---
+
 ## Если что-то не работает
 
 ### Приложение не открывается («повреждено» / «не может быть открыто»)
@@ -159,6 +181,11 @@ Python-библиотеки — это уже чинилось в сборке; 
 - ✅ **«Тихий старт» и лейбл «Windows» в настройках Mac** — убраны/заменены.
 - ✅ **Нет кнопки повтора при ошибке Zapret** — добавлена
   «Попробовать еще раз».
+- ✅ **Обновление TgWsProxy на macOS не работало** — апдейтер смотрел в
+  `slipgate-tgws-cli`, где лежит только `TgWsProxy_windows.exe`, поэтому
+  macOS-ассета не находило и обновлений не было. Добавлено выделенное
+  зеркало `slipgate-tgws-cli-macos`, публикующее «голый» arm64-бинарник
+  `TgWsProxy`; апдейтер теперь берёт его на macOS.
 
 ---
 

@@ -1,0 +1,206 @@
+name: mirror-tgws-macos
+
+# Mirror Flowseal/tg-ws-proxy to a headless macOS (arm64) CLI release so
+# Slipgate's tgws-updater can update TgWsProxy on macOS. Flowseal only ships
+# TgWsProxy_macos_universal.dmg (a GUI .app) for macOS — unusable as a child
+# process — so we build the bare `TgWsProxy` binary ourselves and publish it
+# under the SAME tag as upstream.
+
+on:
+  # Daily, off-peak UTC — catches new upstream releases automatically.
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream Flowseal/tg-ws-proxy tag to mirror (e.g. v1.10.0). Leave empty for latest.'
+        required: false
+      force:
+        description: 'Rebuild and re-publish even if the tag is already mirrored'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: mirror-tgws-macos
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Resolve upstream tag
+        id: ups
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            cat > /tmp/extract_tag.js <<'TAG_EOF'
+            let d = '';
+            process.stdin.on('data', c => d += c);
+            process.stdin.on('end', () => {
+              try {
+                const j = JSON.parse(d);
+                console.log(j && j.tag_name ? j.tag_name : '');
+              } catch (e) { console.log(''); }
+            });
+            TAG_EOF
+            for i in 1 2 3 4 5; do
+              echo "attempt $i: querying Flowseal/tg-ws-proxy latest release"
+              TAG=$(curl -sS -H 'User-Agent: slipgate-mirror' ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} \
+                https://api.github.com/repos/Flowseal/tg-ws-proxy/releases/latest | node /tmp/extract_tag.js)
+              [ -n "$TAG" ] && break
+              echo "  empty/invalid response, retrying in 15s"; sleep 15
+            done
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not resolve upstream tag"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "resolved upstream tag: $TAG"
+
+      - name: Clear existing mirror (force)
+        if: inputs.force == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release delete "${{ steps.ups.outputs.tag }}" --repo "${{ github.repository }}" --yes || true
+
+      - name: Already mirrored?
+        id: skip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if [ "${{ inputs.force }}" != "true" ] && \
+             gh release view "${{ steps.ups.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "already mirrored: ${{ steps.ups.outputs.tag }} — skipping (use force to rebuild)"
+          fi
+
+      - name: Checkout upstream (with retry)
+        if: steps.skip.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Flowseal/tg-ws-proxy
+          ref: ${{ steps.ups.outputs.tag }}
+          path: upstream
+          continue-on-error: true
+
+      - name: Ensure upstream cloned (retry on transient network failure)
+        if: steps.skip.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f upstream/pyproject.toml ]; then
+            rm -rf upstream
+            for i in 1 2 3 4 5; do
+              echo "clone attempt $i"
+              git clone --depth 1 --branch "${{ steps.ups.outputs.tag }}" \
+                https://github.com/Flowseal/tg-ws-proxy.git upstream && break
+              sleep 10
+            done
+          fi
+          test -f upstream/pyproject.toml || { echo 'upstream clone failed'; exit 1; }
+
+      - uses: actions/setup-python@v5
+        if: steps.skip.outputs.skip != 'true'
+        with:
+          python-version: '3.11'
+
+      - name: Install deps (headless)
+        if: steps.skip.outputs.skip != 'true'
+        shell: bash
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          pip install --upgrade pip pyinstaller certifi
+          python - <<'PY'
+          import tomllib, re
+          deps = []
+          try:
+            with open('pyproject.toml', 'rb') as f:
+              d = tomllib.load(f)
+            deps = [x for x in d.get('project', {}).get('dependencies', [])
+                    if not re.match(r'^(pystray|customtkinter|pillow|pyperclip|pyobjc|pyobjc-framework)', x, re.I)]
+          except FileNotFoundError:
+            try:
+              deps = [l for l in open('requirements.txt') if l.strip() and not l.startswith('#')
+                      and not re.match(r'^(pystray|customtkinter|pillow|pyperclip|pyobjc|pyobjc-framework)', l, re.I)]
+            except FileNotFoundError:
+              deps = []
+          open('req-cli.txt', 'w').write('\n'.join(deps))
+          PY
+          pip install -r req-cli.txt
+
+      - name: Build thin CLI (arm64)
+        if: steps.skip.outputs.skip != 'true'
+        shell: bash
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          cat > _cli.py <<'PY'
+          from proxy.tg_ws_proxy import main
+          if __name__ == '__main__':
+              main()
+          PY
+          pyinstaller --onefile --console --name TgWsProxy \
+            --target-arch arm64 \
+            --collect-all certifi \
+            --hidden-import proxy --hidden-import proxy.tg_ws_proxy --hidden-import proxy.bridge \
+            --hidden-import proxy.config --hidden-import proxy.balancer --hidden-import proxy.fake_tls \
+            --hidden-import proxy.raw_websocket --hidden-import proxy.stats --hidden-import proxy.utils \
+            --hidden-import utils.logging_setup \
+            --exclude-module pystray --exclude-module customtkinter --exclude-module PIL \
+            --exclude-module tkinter --exclude-module macos --exclude-module windows --exclude-module linux \
+            _cli.py
+          test -f dist/TgWsProxy || { echo 'Build failed'; exit 1; }
+          chmod +x dist/TgWsProxy
+          file dist/TgWsProxy
+
+      - name: Smoke test
+        if: steps.skip.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./upstream/dist/TgWsProxy --help >/dev/null 2>&1 && echo "[OK] smoke test passed" || {
+            echo "::error::TgWsProxy --help failed"; exit 1; }
+
+      - name: Publish release (mirror)
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.ups.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --title "TgWsProxy CLI ${{ steps.ups.outputs.tag }} (macOS arm64)" \
+            --notes "Automated macOS (arm64) headless CLI mirror of Flowseal/tg-ws-proxy @ ${{ steps.ups.outputs.tag }}.
+
+Built with PyInstaller --onefile --console --target-arch arm64. Consumed by Slipgate's tgws-updater (slipgate-tgws-cli-macos)." \
+            ./upstream/dist/TgWsProxy#TgWsProxy
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        continue-on-error: true
+        run: |
+          TITLE="macOS tgws mirror failed: ${{ steps.ups.outputs.tag }}"
+          BODY="Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if gh issue list --repo "${{ github.repository }}" --search "$TITLE" --state open --json number \
+            | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{const a=JSON.parse(d||"[]");process.exit(a.length?0:1)})'; then
+            echo "issue already open"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$TITLE" --body "$BODY" || true
+          fi

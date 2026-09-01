@@ -38,7 +38,10 @@ Slipgate управляет жизненным циклом двух сетев�
   единый визуальный язык во всём приложении.
 - **Авто-обновление** — проверяет GitHub на новые релизы TgWsProxy и
   Zapret, устанавливает в один клик, кэширует ответ на диск, чтобы
-  плашка обновления появлялась мгновенно при следующем запуске.
+  плашка обновления появлялась мгновенно при следующем запуске. На Windows
+  установщик запускается с повышением прав через UAC (`Start-Process -Verb
+  RunAs`), поэтому кнопка «Обновить» реально ставит новую версию вместо
+  тихого выхода.
 - **Дружелюбный к трею** — сворачивается в системный трей; опция
   `hideTaskbarIcon` полностью прячет иконку с панели задач, оставляя
   только трей.
@@ -144,9 +147,11 @@ Slipgate стоит на плечах нескольких open-source прое�
   Tailwind-темы и набор визуальных примитивов. _GPL-3.0._
 - **[Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy)** —
   Telegram MTProto-over-WebSocket релей; поставляется как headless
-  CLI-пересборка через зеркало
-  [xdxdxdestra-svg/slipgate-tgws-cli](https://github.com/xdxdxdestra-svg/slipgate-tgws-cli).
-  _GPL-3.0._
+  CLI-пересборка через зеркала
+  [xdxdxdestra-svg/slipgate-tgws-cli](https://github.com/xdxdxdestra-svg/slipgate-tgws-cli)
+  (Windows) и
+  [xdxdxdestra-svg/slipgate-tgws-cli-macos](https://github.com/xdxdxdestra-svg/slipgate-tgws-cli-macos)
+  (macOS — «голый» arm64-бинарник). _GPL-3.0._
 - **[Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube)**
   — набор стратегий обхода DPI; используется без изменений плюс
   build-time патчи Slipgate. _GPL-3.0._
