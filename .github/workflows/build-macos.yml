@@ -12,20 +12,11 @@ jobs:
   # 1) Сборка headless-CLI TgWsProxy для macOS из исходников Flowseal.
   #    Mirror-репозиторий (xdxdxdestra-svg/slipgate-tgws-cli) публикует только
   #    Windows-бинарник, поэтому macOS-CLI собираем здесь.
-  #    PyInstaller'а --target-arch universal2 требует universal2-сборку Python
-  #    (python.org), которой на hosted-раннерах нет — поэтому собираем два
-  #    thin-бинарника (x86_64 на Intel-раннере, arm64 на ARM-раннере) и
-  #    объединяем их через `lipo -create` в universal2.
+  #    Используем python.org universal2 (universal) Python + PyInstaller
+  #    --target-arch universal2, чтобы получить один universal2-бинарник сразу,
+  #    БЕЗ зависимости от перегруженного Intel-раннера macos-13.
   build-tgws-cli:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: macos-13
-          - arch: arm64
-            runner: macos-14
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14
     steps:
       - name: Resolve upstream tag
         id: ups
@@ -61,15 +52,25 @@ jobs:
             done
           fi
           test -f upstream/pyproject.toml || { echo 'upstream clone failed'; exit 1; }
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install deps (headless)
+      - name: Install universal2 Python (python.org)
+        shell: bash
+        run: |
+          # python.org universal2 installer: python3.11.9 supports both arches
+          curl -sL -o /tmp/python.pkg \
+            https://www.python.org/ftp/python/3.11.9/python-3.11.9-macos11.pkg
+          sudo installer -pkg /tmp/python.pkg -target / >/dev/null
+          /Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11 -c \
+            "import platform,sys;print('py arch:',sys.version)" || \
+            /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 -c \
+            "import platform,sys;print('py:',platform.machine(),sys.version)"
+      - name: Install deps (headless, universal2 python)
         shell: bash
         working-directory: upstream
+        env:
+          PY311: /Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11
         run: |
-          pip install --upgrade pip pyinstaller certifi
-          python - <<'PY'
+          "$PY311" -m pip install --upgrade pip pyinstaller certifi
+          "$PY311" - <<'PY'
           import tomllib, re
           deps = []
           try:
@@ -85,17 +86,20 @@ jobs:
               deps = []
           open('req-cli.txt', 'w').write('\n'.join(deps))
           PY
-          pip install -r req-cli.txt
-      - name: Build thin CLI (${{ matrix.arch }})
+          "$PY311" -m pip install -r req-cli.txt
+      - name: Build universal2 CLI
         shell: bash
         working-directory: upstream
+        env:
+          PY311: /Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11
         run: |
           cat > _cli.py <<'PY'
           from proxy.tg_ws_proxy import main
           if __name__ == '__main__':
               main()
           PY
-          pyinstaller --onefile --console --name TgWsProxy \
+          "$PY311" -m PyInstaller --onefile --console --name TgWsProxy \
+            --target-arch universal2 \
             --collect-all certifi \
             --hidden-import proxy --hidden-import proxy.tg_ws_proxy --hidden-import proxy.bridge \
             --hidden-import proxy.config --hidden-import proxy.balancer --hidden-import proxy.fake_tls \
@@ -106,61 +110,32 @@ jobs:
             _cli.py
           test -f dist/TgWsProxy || { echo 'Build failed'; exit 1; }
           file dist/TgWsProxy
-          cp dist/TgWsProxy "TgWsProxy-${{ matrix.arch }}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tgws-cli-${{ matrix.arch }}
-          path: upstream/TgWsProxy-${{ matrix.arch }}
-          if-no-files-found: error
-
-  # 1b) Объединяем x86_64 + arm64 в universal2 (lipo), заливаем один артефакт.
-  merge-tgws-cli:
-    needs: build-tgws-cli
-    runs-on: macos-14
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: tgws-cli-x86_64
-          path: cli-x64
-      - uses: actions/download-artifact@v4
-        with:
-          name: tgws-cli-arm64
-          path: cli-arm64
-      - name: lipo -> universal2
-        run: |
-          chmod +x cli-x64/TgWsProxy-x86_64 cli-arm64/TgWsProxy-arm64
-          mkdir -p out
-          lipo -create \
-            cli-x64/TgWsProxy-x86_64 \
-            cli-arm64/TgWsProxy-arm64 \
-            -output out/TgWsProxy
-          file out/TgWsProxy
-          test "$(file -b out/TgWsProxy | grep -c 'x86_64')" -ge 1
-          test "$(file -b out/TgWsProxy | grep -c 'arm64')" -ge 1
+          # Проверка: бинарник должен содержать ОБЕ архитектуры
+          file -b dist/TgWsProxy | grep -q 'x86_64' || { echo 'missing x86_64 slice'; exit 1; }
+          file -b dist/TgWsProxy | grep -q 'arm64' || { echo 'missing arm64 slice'; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: tgws-cli-macos-universal
-          path: out/TgWsProxy
+          path: upstream/dist/TgWsProxy
           if-no-files-found: error
 
   # 2) Сборка Slipgate для macOS: x64, arm64, universal.
-  #    Во всех трёх используем universal2 CLI — он работает на любой arch.
+  #    Все три кросс-собираются на arm64-раннере macos-14 (electron-builder
+  #    умеет собирать x64/universal на arm64-хосте). universal2 CLI работает
+  #    на любой архитектуре, поэтому в каждый пакет кладём один и тот же.
   build-mac:
-    needs: merge-tgws-cli
+    needs: build-tgws-cli
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x64
-            runner: macos-13
             eflag: '--x64'
           - arch: arm64
-            runner: macos-14
             eflag: '--arm64'
           - arch: universal
-            runner: macos-14
             eflag: '--universal'
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
@@ -201,7 +176,7 @@ jobs:
           test -f resources/macos/zapret/strategies.tsv || find resources/macos/zapret -name strategies.tsv
       - name: Install deps
         run: pnpm install --frozen-lockfile=false
-      - name: Build + package
+      - name: Build + package (${{ matrix.arch }})
         run: |
           pnpm exec electron-vite build
           pnpm exec electron-builder --publish never --mac ${{ matrix.eflag }}
