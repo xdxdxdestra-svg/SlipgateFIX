@@ -9,23 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  # 1) Сборка headless-CLI TgWsProxy для macOS из исходников Flowseal.
-  #    Mirror-репозиторий (xdxdxdestra-svg/slipgate-tgws-cli) публикует только
-  #    Windows-бинарник, поэтому macOS-CLI собираем здесь.
-  #    PyInstaller'а --target-arch universal2 требует universal2-сборку Python
-  #    (python.org), которой на hosted-раннерах нет — поэтому собираем два
-  #    thin-бинарника (x86_64 на Intel-раннере, arm64 на ARM-раннере) и
-  #    объединяем их через `lipo -create` в universal2.
+  # 1) Сборка CLI TgWsProxy под ARM64 (macOS 14)
   build-tgws-cli:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: macos-13
-          - arch: arm64
-            runner: macos-14
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14
     steps:
       - name: Resolve upstream tag
         id: ups
@@ -41,13 +27,15 @@ jobs:
           done
           echo "tag=${TAG:-1.6.6}" >> "$GITHUB_OUTPUT"
           echo "resolved upstream tag: ${TAG:-1.6.6}"
+
       - name: Checkout upstream (with retry)
         uses: actions/checkout@v4
         with:
           repository: Flowseal/tg-ws-proxy
           ref: ${{ steps.ups.outputs.tag }}
           path: upstream
-        continue-on-error: true
+          continue-on-error: true
+
       - name: Ensure upstream cloned (retry on transient network failure)
         shell: bash
         run: |
@@ -61,9 +49,11 @@ jobs:
             done
           fi
           test -f upstream/pyproject.toml || { echo 'upstream clone failed'; exit 1; }
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install deps (headless)
         shell: bash
         working-directory: upstream
@@ -86,7 +76,8 @@ jobs:
           open('req-cli.txt', 'w').write('\n'.join(deps))
           PY
           pip install -r req-cli.txt
-      - name: Build thin CLI (${{ matrix.arch }})
+
+      - name: Build thin CLI (arm64)
         shell: bash
         working-directory: upstream
         run: |
@@ -96,6 +87,7 @@ jobs:
               main()
           PY
           pyinstaller --onefile --console --name TgWsProxy \
+            --target-arch arm64 \
             --collect-all certifi \
             --hidden-import proxy --hidden-import proxy.tg_ws_proxy --hidden-import proxy.bridge \
             --hidden-import proxy.config --hidden-import proxy.balancer --hidden-import proxy.fake_tls \
@@ -106,61 +98,17 @@ jobs:
             _cli.py
           test -f dist/TgWsProxy || { echo 'Build failed'; exit 1; }
           file dist/TgWsProxy
-          cp dist/TgWsProxy "TgWsProxy-${{ matrix.arch }}"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: tgws-cli-${{ matrix.arch }}
-          path: upstream/TgWsProxy-${{ matrix.arch }}
+          name: tgws-cli-macos-arm64
+          path: upstream/dist/TgWsProxy
           if-no-files-found: error
 
-  # 1b) Объединяем x86_64 + arm64 в universal2 (lipo), заливаем один артефакт.
-  merge-tgws-cli:
+  # 2) Сборка Slipgate для macOS ARM64
+  build-mac:
     needs: build-tgws-cli
     runs-on: macos-14
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: tgws-cli-x86_64
-          path: cli-x64
-      - uses: actions/download-artifact@v4
-        with:
-          name: tgws-cli-arm64
-          path: cli-arm64
-      - name: lipo -> universal2
-        run: |
-          chmod +x cli-x64/TgWsProxy-x86_64 cli-arm64/TgWsProxy-arm64
-          mkdir -p out
-          lipo -create \
-            cli-x64/TgWsProxy-x86_64 \
-            cli-arm64/TgWsProxy-arm64 \
-            -output out/TgWsProxy
-          file out/TgWsProxy
-          test "$(file -b out/TgWsProxy | grep -c 'x86_64')" -ge 1
-          test "$(file -b out/TgWsProxy | grep -c 'arm64')" -ge 1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tgws-cli-macos-universal
-          path: out/TgWsProxy
-          if-no-files-found: error
-
-  # 2) Сборка Slipgate для macOS: x64, arm64, universal.
-  #    Во всех трёх используем universal2 CLI — он работает на любой arch.
-  build-mac:
-    needs: merge-tgws-cli
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            runner: macos-13
-            eflag: '--x64'
-          - arch: arm64
-            runner: macos-14
-            eflag: '--arm64'
-          - arch: universal
-            runner: macos-14
-            eflag: '--universal'
-    runs-on: ${{ matrix.runner }}
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
@@ -172,16 +120,19 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: Fetch macOS tgws CLI (universal2)
+
+      - name: Fetch macOS tgws CLI (arm64)
         uses: actions/download-artifact@v4
         with:
-          name: tgws-cli-macos-universal
+          name: tgws-cli-macos-arm64
           path: resources/macos/tgws
+
       - name: Fix exec bit + place binary
         run: |
           chmod +x resources/macos/tgws/TgWsProxy
           test -x resources/macos/tgws/TgWsProxy
           file resources/macos/tgws/TgWsProxy
+
       - name: Fetch ZapretMac payload
         run: |
           set -e
@@ -191,7 +142,6 @@ jobs:
           test -n "$URL"
           curl -sL -o /tmp/zapret-mac.zip "$URL"
           mkdir -p /tmp/zapret-mac && cd /tmp/zapret-mac && unzip -o /tmp/zapret-mac.zip
-          # нормализуем к expected структуре: ищем install.sh (верхний уровень или на 1-2 уровня глубже)
           SRC=$(find /tmp/zapret-mac -name install.sh -exec dirname {} \; | head -1)
           test -n "$SRC"
           rm -rf resources/macos/zapret
@@ -199,15 +149,18 @@ jobs:
           chmod +x resources/macos/zapret/*.sh resources/macos/zapret/bin/utunws || true
           test -f resources/macos/zapret/bin/utunws
           test -f resources/macos/zapret/strategies.tsv || find resources/macos/zapret -name strategies.tsv
+
       - name: Install deps
         run: pnpm install --frozen-lockfile=false
+
       - name: Build + package
         run: |
           pnpm exec electron-vite build
-          pnpm exec electron-builder --publish never --mac ${{ matrix.eflag }}
+          pnpm exec electron-builder --publish never --mac --arm64
+
       - uses: actions/upload-artifact@v4
         with:
-          name: slipgate-macos-${{ matrix.arch }}
+          name: slipgate-macos-arm64
           path: |
             dist/*.dmg
             dist/*.zip
