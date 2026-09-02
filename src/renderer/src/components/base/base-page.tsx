@@ -29,25 +29,51 @@ const BasePage = forwardRef<HTMLDivElement, Props>((props, ref) => {
   return (
     <div ref={contentRef} className="w-full h-full">
       <div className="sticky top-0 z-40 h-14.25 w-full">
-        <div className="app-drag px-2 pt-3 pb-2 flex justify-between h-14.25">
-          <div className="title h-full text-lg leading-8 flex items-center gap-1">
+        {isMac ? (
+          // Нативный macOS-вид: название раздела СТРОГО по центру ВСЕЙ ширины
+          // окна (как в нативных приложениях), корректно при любом размере.
+          // Трафик-лайты рисуются в App.tsx поверх слева (top-3 left-5) и не
+          // пересекаются с центрированным заголовком. Перетаскивание окна
+          // работает по всей полосе (наследуется от app-drag).
+          <div className="app-drag px-2 pt-3 pb-2 relative flex items-center h-14.25">
             {(isSubPage || props.showBackButton) && (
               <Button
                 size="icon-sm"
                 variant="ghost"
-                className="app-nodrag"
+                className="app-nodrag absolute z-10 left-20"
                 onClick={() => navigate(-1)}
               >
                 <ChevronLeft className="size-5" />
               </Button>
             )}
-            {props.title}
+            <div className="title absolute left-1/2 -translate-x-1/2 flex items-center gap-1">
+              {props.title}
+            </div>
+            <div className="header absolute right-2 flex gap-1 h-full items-center app-nodrag">
+              {props.header}
+            </div>
           </div>
-          <div className="header flex gap-1 h-full items-center app-nodrag">
-            {props.header}
-            {!isMac && <WindowControls />}
+        ) : (
+          <div className="app-drag px-2 pt-3 pb-2 flex justify-between h-14.25">
+            <div className="title h-full text-lg leading-8 flex items-center gap-1">
+              {(isSubPage || props.showBackButton) && (
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  className="app-nodrag"
+                  onClick={() => navigate(-1)}
+                >
+                  <ChevronLeft className="size-5" />
+                </Button>
+              )}
+              {props.title}
+            </div>
+            <div className="header flex gap-1 h-full items-center app-nodrag">
+              {props.header}
+              {!isMac && <WindowControls />}
+            </div>
           </div>
-        </div>
+        )}
       </div>
       <div className="content h-[calc(100vh-57px)] overflow-y-auto custom-scrollbar">
         {props.children}

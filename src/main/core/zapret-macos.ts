@@ -6,6 +6,7 @@ import AdmZip from 'adm-zip'
 import { zapretRuntimeDir, zapretBundleDir } from '../utils/dirs'
 import { getAppConfig } from '../config'
 import { runAsAdminOnMac } from '../utils/elevation'
+import { isVpnActive, VPN_BLOCK_MESSAGE } from '../utils/vpn'
 import type { StrategyDescriptor } from './zapret'
 
 // macOS backend: использует нативный payload Flowseal/zapret-mac-discord-youtube
@@ -630,6 +631,28 @@ async function startZapretImpl(): Promise<void> {
     setStatus({ state: 'running', startedAt: Date.now() })
     return
   }
+
+  // --- VPN gate (macOS) ---
+  // ПРИЧИНА «краша»: запуск Zapret (pf + utun50) ПОВЕРХ живого VPN-туннеля
+  // ломает сетевой стек macOS — pf перехватывает/перенаправляет трафик
+  // VPN-клиента, туннель рассыпается, и приложение (вместе с IPC и
+  // сетевыми вызовами) оказывается в невалидном состоянии. Фикс — не
+  // выполнять НИКАКИХ сетевых операций (restart.sh / pf / utun), если VPN
+  // активен. Детект нативный, не привязан к конкретному интерфейсу, и
+  // сам НИКОГДА не бросает — поэтому не может стать новым источником падения.
+  if (process.platform === 'darwin') {
+    const vpn = isVpnActive()
+    if (vpn.status === 'active') {
+      setStatus({ state: 'error', lastError: VPN_BLOCK_MESSAGE })
+      throw new Error(VPN_BLOCK_MESSAGE)
+    }
+    if (vpn.status === 'unknown') {
+      // Не смогли достоверно определить — НЕ блокируем (ложный запрет хуже),
+      // но и НЕ падаем. Логируем для диагностики, запуск продолжается.
+      log('warn', `VPN detection inconclusive: ${vpn.detail ?? ''} — продолжаем запуск Zapret.`)
+    }
+  }
+
   if (!isInstalled()) {
     const msg =
       'Zapret не установлен. Откройте страницу «Запрет» и нажмите «Установить/обновить» ' +
