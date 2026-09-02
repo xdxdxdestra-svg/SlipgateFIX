@@ -39,23 +39,57 @@ function activeInterfacesFromNwi(out: string): string[] {
     .filter(Boolean)
 }
 
-/** Интерфейс, характерный для VPN/туннеля, но НЕ наш собственный (utun50). */
-function isVpnInterface(name: string): boolean {
+/** «Сильный» VPN/туннельный интерфейс: ppp / ipsec / tap / pppoe.
+ *  На macOS это практически всегда VPN либо туннель, конфликтующий с Zapret
+ *  (L2TP → ppp0, IKEv2/IPsec → ipsecN, Tap-мост OpenVPN → tapN, PPPoE → ppp0).
+ *  Любой поднятый такой интерфейс считаем VPN. НЕ включаем сюда utun/tun,
+ *  потому что macOS САМА создаёт utun0/utun1 для системных сервисов
+ *  (mDNSResponder, Content Caching, Xcode Simulator, iCloud Private Relay …) —
+ *  это и давало ложные срабатывания «VPN включён». */
+function isVpnTunnelInterface(name: string): boolean {
   if (!name) return false
   if (name === ZAPRET_OWN_INTERFACE) return false
-  return /^(?:utun|tun|ppp|ipsec|pppoe)\d+/i.test(name)
+  return /^(?:ppp|ipsec|tap|pppoe)\d+/i.test(name)
+}
+
+/** «Слабый» виртуальный интерфейс: utun / tun. Сам по себе НЕ признак VPN
+ *  (система тоже их поднимает), поэтому используется только в связке с
+ *  проверкой основного маршрута (см. defaultRouteInterface). */
+function isVpnVirtualInterface(name: string): boolean {
+  if (!name) return false
+  if (name === ZAPRET_OWN_INTERFACE) return false
+  return /^(?:utun|tun)\d+/i.test(name)
+}
+
+/** Интерфейс, несущий основной маршрут (default route).
+ *  `route -n get default` → строка «    interface: utun2». null при любой
+ *  ошибке/таймауте — тогда слабый сигнал просто игнорируется. */
+function defaultRouteInterface(): string | null {
+  const out = probe('/usr/sbin/route', ['-n', 'get', 'default'])
+  if (!out) return null
+  const m = out.match(/interface:\s*(\S+)/i)
+  return m ? m[1] : null
 }
 
 /**
  * Нативная (macOS) проверка активного VPN. НЕ привязываемся к конкретному
- * интерфейсу вроде utun3 — используем сразу несколько независимых сигналов:
+ * интерфейсу вроде utun3 — используем несколько независимых сигналов,
+ * отранжированных по надёжности, чтобы НЕ было ложных срабатываний на
+ * системных интерфейсах macOS:
  *  1) `scutil --nc list` — системные VPN-сервисы (IKEv2 / L2TP / PPTP /
  *     Cisco IPSec и сетевые расширения, включая официальный WireGuard).
  *     `(Connected)` = активный туннель. Не зависит от имени интерфейса.
- *  2) `scutil --nwi` — «Active interfaces». Ловит сторонние VPN
- *     (OpenVPN / Tunnelblick), которые поднимают utun/tun/ppp напрямую
- *     без записи в `scutil --nc`.
- *  3) `ifconfig -l` — фолбэк: любой поднятый utun/tun/ppp кроме нашего.
+ *     САМЫЙ надёжный сигнал.
+ *  2) «Сильные» туннельные интерфейсы ppp/ipsec/tap/pppoe — любой поднятый
+ *     (через `scutil --nwi` Active interfaces и фолбэк `ifconfig -l`)
+ *     считаем VPN.
+ *  3) «Слабый» сигнал для сторонних VPN (OpenVPN / Tunnelblick / WireGuard),
+ *     которые поднимают utun/tun напрямую БЕЗ записи в `scutil --nc`:
+ *     считаем VPN ТОЛЬКО если такой интерфейс несёт основной маршрут
+ *     (full-tunnel VPN). Системные utun0/utun1 НЕ являются маршрутом по
+ *     умолчанию, поэтому ложных срабатываний нет. Split-tunnel VPN (который
+ *     не забирает default route) этим методом не ловится — это безопасный
+ *     режим «пропустили», бан запустится (лучше, чем ложная блокировка).
  *
  * Функция НИКОГДА не бросает исключение: nil-результат, ошибка spawn,
  * пустой вывод или неожиданный формат трактуются как `unknown`/`inactive`,
@@ -73,28 +107,34 @@ export function isVpnActive(): VpnCheck {
       return { status: 'active', detail: 'scutil --nc list: connected VPN service' }
     }
 
-    // 2) Активные интерфейсы из scutil --nwi (сторонние VPN через utun/tun/ppp).
+    // 2) «Сильные» туннельные интерфейсы (ppp/ipsec/tap/pppoe).
     const nwi = probe('/usr/sbin/scutil', ['--nwi'])
     const ifaces = nwi ? activeInterfacesFromNwi(nwi) : []
     for (const i of ifaces) {
-      if (isVpnInterface(i)) {
+      if (isVpnTunnelInterface(i)) {
         return { status: 'active', detail: `scutil --nwi active interface: ${i}` }
       }
     }
-
-    // 3) Фолбэк: любой поднятый VPN-туннельный интерфейс.
     const ifl = probe('/sbin/ifconfig', ['-l'])
     if (ifl) {
       for (const n of ifl.split(/\s+/).filter(Boolean)) {
-        if (isVpnInterface(n)) {
+        if (isVpnTunnelInterface(n)) {
           return { status: 'active', detail: `ifconfig interface: ${n}` }
         }
       }
     }
 
+    // 3) «Слабый» сигнал: utun/tun считаем VPN ТОЛЬКО если несёт default route
+    //    (full-tunnel VPN). Системные utun0/utun1 не являются маршрутом по
+    //    умолчанию → ложных срабатываний нет.
+    const def = defaultRouteInterface()
+    if (def && isVpnVirtualInterface(def)) {
+      return { status: 'active', detail: `default route via ${def}` }
+    }
+
     // Все пробы пусты — на macOS этого быть не должно, но перестрахуемся:
     // считаем «неизвестно», чтобы не блокировать запуск на ложном срабатывании.
-    if (!nc && !nwi && !ifl) {
+    if (!nc && !nwi && !ifl && !def) {
       return { status: 'unknown', detail: 'all native VPN probes returned no output' }
     }
     return { status: 'inactive' }
